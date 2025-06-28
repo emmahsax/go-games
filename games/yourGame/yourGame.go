@@ -6,7 +6,7 @@ import (
 
 func NewCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "your-game", // <----- Change how users call your game here
+		Use: "your-game", // <----- Change how users call your game here
 
 		// Aliases to make calling your game easier
 		// Aliases: []string{""},
