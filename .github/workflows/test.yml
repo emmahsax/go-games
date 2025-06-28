@@ -8,26 +8,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - id: branch
-        run: |
-          if [[ ${{ github.ref }} == 'refs/heads'* ]]; then # This is a branch, not a pull request
-            echo "branch=$(echo ${{ github.ref }} | sed -E 's|refs/[a-zA-Z]+/||')" >> $GITHUB_OUTPUT
-          else
-            echo "branch=$(echo ${{ github.head_ref }} | sed -E 's|refs/[a-zA-Z]+/||')" >> $GITHUB_OUTPUT
-          fi
-
       - name: Check Out Code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.branch.outputs.branch }}
 
       - name: Install Go
         uses: actions/setup-go@v5
         with:
           go-version: 1.24
-
-      - name: Go Build
-        run: GOOS=darwin GOARCH=arm64 go build -o bin/go-games .
 
       - name: Go Test
         run: go test -v ./...
@@ -47,3 +34,18 @@ jobs:
           install-go: false
           cache-key: 1.24
           working-directory: ./
+
+  build-macos-arm64:
+    runs-on: macos-latest
+    needs: test
+    steps:
+      - name: Check Out Code
+        uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.24
+
+      - name: Build for macOS arm64
+        run: GOOS=darwin GOARCH=arm64 go build -o bin/go-games .
