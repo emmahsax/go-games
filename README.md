@@ -11,14 +11,15 @@ An easy way to make simple command-line games with Go.
     ```sh
     go mod tidy
     ```
-5. Place your game's first file in a package in the `games/` directory (use the `games/yourGame/yourGame.go` as a template)
-6. (optional) Rename the directory of the file (e.g. change `games/yourGame` to be `games/superFunTimeGame`)
-7. (optional) Rename the file in the directory (e.g. change `games/superFunTimeGame/yourGame.go` to be `games/superFunTimeGame/superFunTimeGame.go`)
+5. Create a directory in `games/` that's the name of your game (e.g. `games/superFunTimeGame`)
+6. Create a file in that directory called the name of your game that ends in `.go` (e.g. `games/superFunTimeGame/superFunTimeGame.go`)
+7. Copy the contents of `games/yourGame/yourGame.go` into your new file
 8. Change the package name on line 1 to be the name of your game (e.g. change `yourGame` to `superFunTimeGame`)
-9. Change the usage line of your game on line 22 to be the string people will use on the command-line to call your game (e.g. change `your-game` to `super-fun-time-game`)
+9. Change the usage line of your game on line 9 to be the string people will use on the command-line to call your game (e.g. change `your-game` to `super-fun-time-game`)
 10. Code your game using [Ebitengine](https://github.com/hajimehoshi/ebiten) (use the `deliveryDash` game as an example of using Ebitengine to code a fun 2D game)
-11. (optional) Write some instructions on the top of the file so people know how to play your game
+11. Optionally write some instructions on the top of the file so people know how to play your game
 12. Change the package name on lines 8 and 21 of `main.go` to be the same as your package name (e.g. change `yourGame` to `superFunTimeGame`)
+    * The line numbers in this instruction are guidelines, if multiple people have added different games, these lines could change
 13. Run your game
     ```sh
     # Example where game is named superFunTimeGame and ensure your command-line string matches what you set in Step 9
