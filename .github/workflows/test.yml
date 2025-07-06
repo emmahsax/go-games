@@ -37,7 +37,7 @@ jobs:
           gofmt-flags: '-l -d'
 
       - name: Go Staticcheck
-        uses: dominikh/staticcheck-action@v1.3.1
+        uses: dominikh/staticcheck-action@v1.4.0
         with:
           install-go: false
           cache-key: 1.24
