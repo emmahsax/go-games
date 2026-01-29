@@ -1,5 +1,5 @@
-# github.com/ebitengine/gomobile v0.0.0-20240911145611-4856209ac325
-## explicit; go 1.22.0
+# github.com/ebitengine/gomobile v0.0.0-20250923094054-ea854a63cce1
+## explicit; go 1.24.0
 github.com/ebitengine/gomobile/app
 github.com/ebitengine/gomobile/app/internal/callfn
 github.com/ebitengine/gomobile/event/key
@@ -13,15 +13,15 @@ github.com/ebitengine/gomobile/internal/mobileinit
 # github.com/ebitengine/hideconsole v1.0.0
 ## explicit; go 1.18
 github.com/ebitengine/hideconsole
-# github.com/ebitengine/purego v0.8.0
+# github.com/ebitengine/purego v0.9.0
 ## explicit; go 1.18
 github.com/ebitengine/purego
 github.com/ebitengine/purego/internal/cgo
 github.com/ebitengine/purego/internal/fakecgo
 github.com/ebitengine/purego/internal/strings
 github.com/ebitengine/purego/objc
-# github.com/hajimehoshi/ebiten/v2 v2.8.8
-## explicit; go 1.22.0
+# github.com/hajimehoshi/ebiten/v2 v2.9.8
+## explicit; go 1.24.0
 github.com/hajimehoshi/ebiten/v2
 github.com/hajimehoshi/ebiten/v2/ebitenutil
 github.com/hajimehoshi/ebiten/v2/internal/affine
@@ -46,6 +46,7 @@ github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver/opengl
 github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver/opengl/gl
 github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver/playstation5
 github.com/hajimehoshi/ebiten/v2/internal/hook
+github.com/hajimehoshi/ebiten/v2/internal/inputstate
 github.com/hajimehoshi/ebiten/v2/internal/microsoftgdk
 github.com/hajimehoshi/ebiten/v2/internal/mipmap
 github.com/hajimehoshi/ebiten/v2/internal/packing
@@ -76,10 +77,10 @@ github.com/spf13/cobra
 # github.com/spf13/pflag v1.0.6
 ## explicit; go 1.12
 github.com/spf13/pflag
-# golang.org/x/sync v0.8.0
-## explicit; go 1.18
+# golang.org/x/sync v0.17.0
+## explicit; go 1.24.0
 golang.org/x/sync/errgroup
-# golang.org/x/sys v0.25.0
-## explicit; go 1.18
+# golang.org/x/sys v0.36.0
+## explicit; go 1.24.0
 golang.org/x/sys/unix
 golang.org/x/sys/windows
