@@ -115,15 +115,15 @@ func NewGame() *Game {
 	// Draw a simple car shape
 	carSprite.Fill(color.RGBA{0, 0, 0, 0}) // Clear the image
 	// Draw car body
-	vector.DrawFilledRect(carSprite, 0, 5, 30, 10, color.RGBA{255, 0, 0, 255}, false)
+	vector.FillRect(carSprite, 0, 5, 30, 10, color.RGBA{255, 0, 0, 255}, false)
 	// Draw windows
-	vector.DrawFilledRect(carSprite, 5, 2, 8, 3, color.RGBA{200, 200, 255, 255}, false)
-	vector.DrawFilledRect(carSprite, 17, 2, 8, 3, color.RGBA{200, 200, 255, 255}, false)
+	vector.FillRect(carSprite, 5, 2, 8, 3, color.RGBA{200, 200, 255, 255}, false)
+	vector.FillRect(carSprite, 17, 2, 8, 3, color.RGBA{200, 200, 255, 255}, false)
 	// Draw wheels
-	vector.DrawFilledRect(carSprite, 3, 0, 4, 5, color.RGBA{50, 50, 50, 255}, false)
-	vector.DrawFilledRect(carSprite, 23, 0, 4, 5, color.RGBA{50, 50, 50, 255}, false)
-	vector.DrawFilledRect(carSprite, 3, 15, 4, 5, color.RGBA{50, 50, 50, 255}, false)
-	vector.DrawFilledRect(carSprite, 23, 15, 4, 5, color.RGBA{50, 50, 50, 255}, false)
+	vector.FillRect(carSprite, 3, 0, 4, 5, color.RGBA{50, 50, 50, 255}, false)
+	vector.FillRect(carSprite, 23, 0, 4, 5, color.RGBA{50, 50, 50, 255}, false)
+	vector.FillRect(carSprite, 3, 15, 4, 5, color.RGBA{50, 50, 50, 255}, false)
+	vector.FillRect(carSprite, 23, 15, 4, 5, color.RGBA{50, 50, 50, 255}, false)
 
 	// Initialize maze
 	maze := make([][]bool, mazeHeight)
@@ -500,7 +500,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 
 	// Draw border around the maze
-	vector.DrawFilledRect(screen,
+	vector.FillRect(screen,
 		float32(cellSize),
 		float32(cellSize),
 		float32(mazeWidth*cellSize),
@@ -515,7 +515,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 			if g.maze[y][x] {
 				// Draw a cross of lines for wall cells
 				// Vertical line in the middle of the cell
-				vector.DrawFilledRect(screen,
+				vector.FillRect(screen,
 					float32((x+1)*cellSize+cellSize/2), // +1 for border
 					float32((y+1)*cellSize),            // +1 for border
 					float32(wallThickness),
@@ -524,7 +524,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 					false,
 				)
 				// Horizontal line in the middle of the cell
-				vector.DrawFilledRect(screen,
+				vector.FillRect(screen,
 					float32((x+1)*cellSize),            // +1 for border
 					float32((y+1)*cellSize+cellSize/2), // +1 for border
 					float32(cellSize),
@@ -534,7 +534,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 				)
 			} else {
 				// Optional: very subtle path indicator
-				vector.DrawFilledRect(screen,
+				vector.FillRect(screen,
 					float32((x+1)*cellSize+cellSize/2-1), // +1 for border
 					float32((y+1)*cellSize+cellSize/2-1), // +1 for border
 					2,
@@ -547,7 +547,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 	}
 
 	// Draw start and end positions
-	vector.DrawFilledRect(screen,
+	vector.FillRect(screen,
 		float32((g.startX+1)*cellSize), // +1 for border
 		float32((g.startY+1)*cellSize), // +1 for border
 		float32(cellSize),
@@ -555,7 +555,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		color.RGBA{0, 255, 0, 255},
 		false,
 	)
-	vector.DrawFilledRect(screen,
+	vector.FillRect(screen,
 		float32((g.endX+1)*cellSize), // +1 for border
 		float32((g.endY+1)*cellSize), // +1 for border
 		float32(cellSize),
