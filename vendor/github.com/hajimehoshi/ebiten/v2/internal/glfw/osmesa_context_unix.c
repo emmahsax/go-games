@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: 2016-2017 Camilla Löwy <elmindreda@glfw.org>
 // SPDX-FileCopyrightText: 2023 The Ebitengine Authors
 
-//go:build darwin || freebsd || linux || netbsd || openbsd
+//go:build freebsd || linux || netbsd || openbsd
 
 #include "internal_unix.h"
 
@@ -71,7 +71,7 @@ static void swapBuffersOSMesa(_GLFWwindow* window)
     // No double buffering on OSMesa
 }
 
-static void swapIntervalOSMesa(int interval)
+static void swapIntervalOSMesa(_GLFWwindow* window, int interval)
 {
     // No swap interval on OSMesa
 }

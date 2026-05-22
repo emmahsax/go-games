@@ -8,6 +8,7 @@ package glfw
 import (
 	"errors"
 	"fmt"
+	"image"
 	"math"
 	"runtime"
 	"unsafe"
@@ -199,6 +200,10 @@ func (w *Window) clientToScreen(rect _RECT) (_RECT, error) {
 }
 
 func captureCursor(window *Window) error {
+	if microsoftgdk.IsXbox() {
+		return nil
+	}
+
 	clipRect, err := _GetClientRect(window.platform.handle)
 	if err != nil {
 		return err
@@ -215,6 +220,10 @@ func captureCursor(window *Window) error {
 }
 
 func releaseCursor() error {
+	if microsoftgdk.IsXbox() {
+		return nil
+	}
+
 	if err := _ClipCursor(nil); err != nil {
 		return err
 	}
@@ -2343,6 +2352,31 @@ func platformGetScancodeName(scancode int) (string, error) {
 
 func platformGetKeyScancode(key Key) int {
 	return _glfw.platformWindow.scancodes[key]
+}
+
+func (c *Cursor) platformCreateCursor(img *image.NRGBA, xhot, yhot int) error {
+	if microsoftgdk.IsXbox() {
+		return nil
+	}
+
+	b := img.Bounds()
+	w := b.Dx()
+	h := b.Dy()
+
+	// Repack into a tight RGBA buffer: createIcon expects contiguous pixels
+	// and a non-zero image origin or non-trivial stride would confuse it.
+	pixels := make([]byte, w*h*4)
+	for y := range h {
+		src := img.PixOffset(b.Min.X, b.Min.Y+y)
+		copy(pixels[y*w*4:(y+1)*w*4], img.Pix[src:src+w*4])
+	}
+
+	handle, err := createIcon(&Image{Width: w, Height: h, Pixels: pixels}, xhot, yhot, false)
+	if err != nil {
+		return err
+	}
+	c.platform.handle = _HCURSOR(handle)
+	return nil
 }
 
 func (c *Cursor) platformCreateStandardCursor(shape StandardCursor) error {

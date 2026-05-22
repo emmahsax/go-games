@@ -20,12 +20,15 @@ import (
 	"math"
 	"math/bits"
 	"runtime"
+	"slices"
 	"sync"
+	"sync/atomic"
 
+	"github.com/hajimehoshi/ebiten/v2/internal/debug"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphics"
+	"github.com/hajimehoshi/ebiten/v2/internal/graphicscommand"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver"
 	"github.com/hajimehoshi/ebiten/v2/internal/packing"
-	"github.com/hajimehoshi/ebiten/v2/internal/restorable"
 	"github.com/hajimehoshi/ebiten/v2/internal/shaderir"
 )
 
@@ -59,6 +62,11 @@ const baseCountToPutOnSourceBackend = 10
 func putImagesOnSourceBackend() {
 	// The counter usedAsDestinationCount is updated at most once per frame (#2676).
 	imagesUsedAsDestination.forEach(func(i *Image) {
+		// i.backend can be nil after deallocate is called.
+		if i.backend == nil {
+			i.usedAsDestinationCount = 0
+			return
+		}
 		// This counter is not updated when the backend is created in this frame.
 		if !i.backendCreatedInThisFrame && i.usedAsDestinationCount < math.MaxInt {
 			i.usedAsDestinationCount++
@@ -68,6 +76,11 @@ func putImagesOnSourceBackend() {
 	imagesUsedAsDestination.clear()
 
 	imagesToPutOnSourceBackend.forEach(func(i *Image) {
+		// i.backend can be nil after deallocate is called.
+		if i.backend == nil {
+			i.usedAsSourceCount = 0
+			return
+		}
 		if i.usedAsSourceCount < math.MaxInt {
 			i.usedAsSourceCount++
 		}
@@ -82,22 +95,40 @@ func putImagesOnSourceBackend() {
 // backend is a big texture atlas that can have multiple images.
 // backend is a texture in GPU.
 type backend struct {
-	// restorable is an atlas on which there might be multiple images.
-	restorable *restorable.Image
+	width  int
+	height int
+
+	// backendImage is an implementation backendImage stored in the GPU.
+	backendImage *graphicscommand.Image
 
 	// page is an atlas map. Each part is called a node.
 	// If page is nil, the backend's image is isolated and not on an atlas.
 	page *packing.Page
 
+	// screen indicates whether this backend is used as a screen image or not.
+	screen bool
+
 	// source reports whether this backend is mainly used a rendering source, but this is not 100%.
 	//
 	// If a non-source (destination) image is used as a source many times,
 	// the image's backend might be turned into a source backend to optimize draw calls.
+	//
+	// source is always false when the image type is not ImageTypeRegular.
 	source bool
 
 	// sourceInThisFrame reports whether this backend is used as a source in this frame.
 	// sourceInThisFrame is reset every frame.
 	sourceInThisFrame bool
+
+	// restoreInfo is information for restoration from a context loss.
+	restoreInfo restoreInfo
+}
+
+type restoreInfo struct {
+	valid  bool
+	screen bool
+	pixels *graphics.ManagedBytes
+	region image.Rectangle
 }
 
 func (b *backend) tryAlloc(width, height int) (*packing.Node, bool) {
@@ -110,9 +141,42 @@ func (b *backend) tryAlloc(width, height int) (*packing.Node, bool) {
 		return nil, false
 	}
 
-	b.restorable = b.restorable.Extend(b.page.Size())
+	pageW, pageH := b.page.Size()
+	if w, h := b.backendImage.InternalSize(); pageW <= w && pageH <= h {
+		return n, true
+	}
+
+	// Extend the image.
+	newImg := graphicscommand.NewImage(pageW, pageH, b.screen, "")
+	clearImage(newImg, image.Rect(0, 0, pageW, pageH))
+	src := b.backendImage
+	srcs := [graphics.ShaderSrcImageCount]*graphicscommand.Image{src}
+	sw, sh := src.InternalSize()
+	vs := make([]float32, 4*graphics.VertexFloatCount)
+	graphics.QuadVerticesFromDstAndSrc(vs, 0, 0, float32(sw), float32(sh), 0, 0, float32(sw), float32(sh), 1, 1, 1, 1)
+	is := graphics.QuadIndices()
+	dr := image.Rect(0, 0, sw, sh)
+	newImg.DrawTriangles(srcs, vs, is, graphicsdriver.BlendCopy, dr, [graphics.ShaderSrcImageCount]image.Rectangle{dr}, NearestFilterShader.ensureShader(), nil)
+	src.Dispose()
+	b.backendImage = newImg
+	b.width = pageW
+	b.height = pageH
 
 	return n, true
+}
+
+func (b *backend) clear(region image.Rectangle) {
+	if b.backendImage == nil {
+		return
+	}
+	clearImage(b.backendImage, region)
+}
+
+func clearImage(dst *graphicscommand.Image, region image.Rectangle) {
+	vs := make([]float32, 4*graphics.VertexFloatCount)
+	graphics.QuadVerticesFromDstAndSrc(vs, float32(region.Min.X), float32(region.Min.Y), float32(region.Max.X), float32(region.Max.Y), 0, 0, 0, 0, 0, 0, 0, 0)
+	is := graphics.QuadIndices()
+	dst.DrawTriangles([graphics.ShaderSrcImageCount]*graphicscommand.Image{}, vs, is, graphicsdriver.BlendClear, region, [graphics.ShaderSrcImageCount]image.Rectangle{}, clearShader.ensureShader(), nil)
 }
 
 var (
@@ -123,14 +187,16 @@ var (
 	// If inFrame is false, function calls on an image should be deferred until the next BeginFrame.
 	inFrame bool
 
-	initOnce sync.Once
+	initOnce  sync.Once
+	inited    atomic.Bool
+	suspended atomic.Bool
 
 	// theBackends is a set of atlases.
 	theBackends []*backend
 
-	imagesToPutOnSourceBackend smallImageSet
+	imagesToPutOnSourceBackend imageSmallSet
 
-	imagesUsedAsDestination smallImageSet
+	imagesUsedAsDestination imageSmallSet
 
 	deferred []func()
 
@@ -149,16 +215,18 @@ const (
 	// A screen image is also unmanaged.
 	ImageTypeScreen
 
-	// ImageTypeVolatile is a volatile image that is cleared every frame.
-	// A volatile image is also unmanaged.
-	ImageTypeVolatile
-
 	// ImageTypeUnmanaged is an unmanaged image that is not on an atlas.
 	ImageTypeUnmanaged
 )
 
 // Image is a rectangle pixel set that might be on an atlas.
 type Image struct {
+	*imageImpl
+
+	cleanup runtime.Cleanup
+}
+
+type imageImpl struct {
 	width     int
 	height    int
 	imageType ImageType
@@ -171,7 +239,7 @@ type Image struct {
 	// usedAsSourceCount represents how long the image is used as a rendering source and kept not modified with
 	// DrawTriangles.
 	// In the current implementation, if an image is being modified by DrawTriangles, the image is separated from
-	// a restorable image on an atlas by ensureIsolatedFromSource.
+	// a backend image for an atlas by ensureIsolatedFromSource.
 	//
 	// The type is int64 instead of int to avoid overflow when comparing the limitation.
 	//
@@ -193,15 +261,21 @@ type Image struct {
 //
 // moveTo is similar to C++'s move semantics.
 func (i *Image) moveTo(dst *Image) {
-	dst.deallocate()
-	*dst = *i
+	dst.deallocateImpl()
+	dst.cleanup.Stop()
+
+	impl := *i.imageImpl
+	dst.imageImpl = &impl
+	if dst.backend != nil {
+		dst.cleanup = runtime.AddCleanup(dst, (*imageImpl).cleanup, dst.imageImpl)
+	}
 
 	// i is no longer available but the finalizer must not be called
 	// since i and dst share the same backend and the same node.
-	runtime.SetFinalizer(i, nil)
+	i.cleanup.Stop()
 }
 
-func (i *Image) isOnAtlas() bool {
+func (i *imageImpl) isOnAtlas() bool {
 	return i.node != nil
 }
 
@@ -217,7 +291,7 @@ func (i *Image) resetUsedAsSourceCount() {
 	imagesToPutOnSourceBackend.remove(i)
 }
 
-func (i *Image) paddingSize() int {
+func (i *imageImpl) paddingSize() int {
 	if i.imageType == ImageTypeRegular {
 		return 1
 	}
@@ -249,14 +323,9 @@ func (i *Image) ensureIsolatedFromSource(backends []*backend) {
 	}
 
 	// Check if i has the same backend as the given backends.
-	var needsIsolation bool
-	for _, b := range backends {
-		if i.backend == b {
-			needsIsolation = true
-			break
-		}
-	}
-	if !needsIsolation {
+	if !slices.ContainsFunc(backends, func(b *backend) bool {
+		return i.backend == b
+	}) {
 		return
 	}
 
@@ -279,7 +348,7 @@ func (i *Image) ensureIsolatedFromSource(backends []*backend) {
 	dr := image.Rect(0, 0, i.width, i.height)
 	sr := image.Rect(0, 0, i.width, i.height)
 
-	newI.drawTriangles([graphics.ShaderSrcImageCount]*Image{i}, vs, is, graphicsdriver.BlendCopy, dr, [graphics.ShaderSrcImageCount]image.Rectangle{sr}, NearestFilterShader, nil, graphicsdriver.FillRuleFillAll, restorable.HintOverwriteDstRegion)
+	newI.drawTriangles([graphics.ShaderSrcImageCount]*Image{i}, vs, is, graphicsdriver.BlendCopy, dr, [graphics.ShaderSrcImageCount]image.Rectangle{sr}, NearestFilterShader, nil)
 	newI.moveTo(i)
 }
 
@@ -310,7 +379,7 @@ func (i *Image) putOnSourceBackend() {
 	is := graphics.QuadIndices()
 	dr := image.Rect(0, 0, i.width, i.height)
 	sr := image.Rect(0, 0, i.width, i.height)
-	newI.drawTriangles([graphics.ShaderSrcImageCount]*Image{i}, vs, is, graphicsdriver.BlendCopy, dr, [graphics.ShaderSrcImageCount]image.Rectangle{sr}, NearestFilterShader, nil, graphicsdriver.FillRuleFillAll, restorable.HintOverwriteDstRegion)
+	newI.drawTriangles([graphics.ShaderSrcImageCount]*Image{i}, vs, is, graphicsdriver.BlendCopy, dr, [graphics.ShaderSrcImageCount]image.Rectangle{sr}, NearestFilterShader, nil)
 
 	newI.moveTo(i)
 	i.usedAsSourceCount = 0
@@ -320,7 +389,7 @@ func (i *Image) putOnSourceBackend() {
 	}
 }
 
-func (i *Image) regionWithPadding() image.Rectangle {
+func (i *imageImpl) regionWithPadding() image.Rectangle {
 	if i.backend == nil {
 		panic("atlas: backend must not be nil: not allocated yet?")
 	}
@@ -342,7 +411,7 @@ func (i *Image) regionWithPadding() image.Rectangle {
 //	5: Color G
 //	6: Color B
 //	7: Color Y
-func (i *Image) DrawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertices []float32, indices []uint32, blend graphicsdriver.Blend, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle, shader *Shader, uniforms []uint32, fillRule graphicsdriver.FillRule, hint restorable.Hint) {
+func (i *Image) DrawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertices []float32, indices []uint32, blend graphicsdriver.Blend, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle, shader *Shader, uniforms []uint32) {
 	backendsM.Lock()
 	defer backendsM.Unlock()
 
@@ -355,15 +424,15 @@ func (i *Image) DrawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertice
 		copy(us, uniforms)
 
 		appendDeferred(func() {
-			i.drawTriangles(srcs, vs, is, blend, dstRegion, srcRegions, shader, us, fillRule, hint)
+			i.drawTriangles(srcs, vs, is, blend, dstRegion, srcRegions, shader, us)
 		})
 		return
 	}
 
-	i.drawTriangles(srcs, vertices, indices, blend, dstRegion, srcRegions, shader, uniforms, fillRule, hint)
+	i.drawTriangles(srcs, vertices, indices, blend, dstRegion, srcRegions, shader, uniforms)
 }
 
-func (i *Image) drawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertices []float32, indices []uint32, blend graphicsdriver.Blend, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle, shader *Shader, uniforms []uint32, fillRule graphicsdriver.FillRule, hint restorable.Hint) {
+func (i *Image) drawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertices []float32, indices []uint32, blend graphicsdriver.Blend, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle, shader *Shader, uniforms []uint32) {
 	backends := make([]*backend, 0, len(srcs))
 	for _, src := range srcs {
 		if src == nil {
@@ -372,7 +441,7 @@ func (i *Image) drawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertice
 		if src.backend == nil {
 			// It is possible to spcify i.backend as a forbidden backend, but this might prevent a good allocation for a source image.
 			// If the backend becomes the same as i's, i's backend will be changed at ensureIsolatedFromSource.
-			src.allocate(nil, true)
+			src.allocate(nil, i.imageType == ImageTypeRegular)
 		}
 		backends = append(backends, src.backend)
 		src.backend.sourceInThisFrame = true
@@ -383,7 +452,7 @@ func (i *Image) drawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertice
 	for _, src := range srcs {
 		// Compare i and source images after ensuring i is not on an atlas, or
 		// i and a source image might share the same atlas even though i != src.
-		if src != nil && i.backend.restorable == src.backend.restorable {
+		if src != nil && i.backend.backendImage == src.backend.backendImage {
 			panic("atlas: Image.DrawTriangles: source must be different from the receiver")
 		}
 	}
@@ -405,8 +474,8 @@ func (i *Image) drawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertice
 			vertices[i+2] += oxf
 			vertices[i+3] += oyf
 		}
-		if shader.ensureShader().Unit() == shaderir.Texels {
-			sw, sh := srcs[0].backend.restorable.InternalSize()
+		if shader.unit == shaderir.Texels {
+			sw, sh := srcs[0].backend.backendImage.InternalSize()
 			swf, shf := float32(sw), float32(sh)
 			for i := 0; i < n; i += graphics.VertexFloatCount {
 				vertices[i+2] /= swf
@@ -421,6 +490,7 @@ func (i *Image) drawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertice
 		}
 	}
 
+	var imgs [graphics.ShaderSrcImageCount]*graphicscommand.Image
 	for i, src := range srcs {
 		if src == nil {
 			continue
@@ -429,33 +499,18 @@ func (i *Image) drawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertice
 		// A source region can be deliberately empty when this is not needed in order to avoid unexpected
 		// performance issue (#1293).
 		// TODO: This should no longer be needed but is kept just in case. Remove this later.
-		if srcRegions[i].Empty() {
-			continue
+		if !srcRegions[i].Empty() {
+			r := src.regionWithPadding()
+			srcRegions[i] = srcRegions[i].Add(r.Min)
 		}
-
-		r := src.regionWithPadding()
-		srcRegions[i] = srcRegions[i].Add(r.Min)
-	}
-
-	var imgs [graphics.ShaderSrcImageCount]*restorable.Image
-	for i, src := range srcs {
-		if src == nil {
-			continue
-		}
-		imgs[i] = src.backend.restorable
-	}
-
-	i.backend.restorable.DrawTriangles(imgs, vertices, indices, blend, dstRegion, srcRegions, shader.ensureShader(), uniforms, fillRule, hint)
-
-	for _, src := range srcs {
-		if src == nil {
-			continue
-		}
+		imgs[i] = src.backend.backendImage
 		if !src.isOnSourceBackend() && src.canBePutOnAtlas() {
 			// src might already registered, but assigning it again is not harmful.
 			imagesToPutOnSourceBackend.add(src)
 		}
 	}
+
+	i.backend.backendImage.DrawTriangles(imgs, vertices, indices, blend, dstRegion, srcRegions, shader.ensureShader(), uniforms)
 }
 
 // WritePixels replaces the pixels on the image.
@@ -488,7 +543,7 @@ func (i *Image) writePixels(pix []byte, region image.Rectangle) {
 			return
 		}
 		// Allocate as a source as this image will likely be used as a source.
-		i.allocate(nil, true)
+		i.allocate(nil, i.imageType == ImageTypeRegular)
 	}
 
 	r := i.regionWithPadding()
@@ -497,7 +552,7 @@ func (i *Image) writePixels(pix []byte, region image.Rectangle) {
 		region = region.Add(r.Min)
 
 		if pix == nil {
-			i.backend.restorable.ClearPixels(region)
+			i.backend.clear(region)
 			return
 		}
 
@@ -505,7 +560,7 @@ func (i *Image) writePixels(pix []byte, region image.Rectangle) {
 		pix2 := graphics.NewManagedBytes(len(pix), func(bs []byte) {
 			copy(bs, pix)
 		})
-		i.backend.restorable.WritePixels(pix2, region)
+		i.backend.backendImage.WritePixels(pix2, region)
 		return
 	}
 
@@ -519,7 +574,7 @@ func (i *Image) writePixels(pix []byte, region image.Rectangle) {
 	pixb := graphics.NewManagedBytes(4*r.Dx()*r.Dy(), func(bs []byte) {
 		// Clear the edges. bs might not be zero-cleared.
 		rowPixels := 4 * r.Dx()
-		for i := 0; i < rowPixels; i++ {
+		for i := range rowPixels {
 			bs[rowPixels*(r.Dy()-1)+i] = 0
 		}
 		for j := 1; j < r.Dy(); j++ {
@@ -534,7 +589,7 @@ func (i *Image) writePixels(pix []byte, region image.Rectangle) {
 			copy(bs[4*j*r.Dx():], pix[4*j*region.Dx():4*(j+1)*region.Dx()])
 		}
 	})
-	i.backend.restorable.WritePixels(pixb, r)
+	i.backend.backendImage.WritePixels(pixb, r)
 }
 
 func (i *Image) ReadPixels(graphicsDriver graphicsdriver.Graphics, pixels []byte, region image.Rectangle) (ok bool, err error) {
@@ -550,14 +605,20 @@ func (i *Image) ReadPixels(graphicsDriver graphicsdriver.Graphics, pixels []byte
 	// To prevent memory leaks, flush the deferred functions here.
 	flushDeferred()
 
-	if i.backend == nil || i.backend.restorable == nil {
+	if i.backend == nil || i.backend.backendImage == nil {
 		for i := range pixels {
 			pixels[i] = 0
 		}
 		return true, nil
 	}
 
-	if err := i.backend.restorable.ReadPixels(graphicsDriver, pixels, region.Add(i.regionWithPadding().Min)); err != nil {
+	args := []graphicsdriver.PixelsArgs{
+		{
+			Pixels: pixels,
+			Region: region.Add(i.regionWithPadding().Min),
+		},
+	}
+	if err := i.backend.backendImage.ReadPixels(graphicsDriver, args); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -566,30 +627,29 @@ func (i *Image) ReadPixels(graphicsDriver graphicsdriver.Graphics, pixels []byte
 // Deallocate deallocates the internal state.
 // Even after this call, the image is still available as a new cleared image.
 func (i *Image) Deallocate() {
+	i.cleanup.Stop()
+
 	backendsM.Lock()
 	defer backendsM.Unlock()
 
 	if !inFrame {
 		appendDeferred(func() {
-			i.deallocate()
-			runtime.SetFinalizer(i, nil)
+			i.deallocateImpl()
 		})
 		return
 	}
 
-	i.deallocate()
-	runtime.SetFinalizer(i, nil)
+	i.deallocateImpl()
 }
 
-func (i *Image) deallocate() {
+func (i *imageImpl) deallocateImpl() {
 	defer func() {
 		i.backend = nil
 		i.node = nil
 	}()
 
-	i.resetUsedAsSourceCount()
+	i.usedAsSourceCount = 0
 	i.usedAsDestinationCount = 0
-	imagesUsedAsDestination.remove(i)
 
 	if i.backend == nil {
 		// Not allocated yet.
@@ -601,12 +661,14 @@ func (i *Image) deallocate() {
 		if !i.backend.page.IsEmpty() {
 			// As this part can be reused, this should be cleared explicitly.
 			r := i.regionWithPadding()
-			i.backend.restorable.ClearPixels(r)
+			i.backend.clear(r)
 			return
 		}
 	}
 
-	i.backend.restorable.Dispose()
+	i.backend.backendImage.Dispose()
+	i.backend.backendImage = nil
+	i.backend.restoreInfo = restoreInfo{}
 
 	for idx, sh := range theBackends {
 		if sh == i.backend {
@@ -623,9 +685,11 @@ func (i *Image) deallocate() {
 func NewImage(width, height int, imageType ImageType) *Image {
 	// Actual allocation is done lazily, and the lock is not needed.
 	return &Image{
-		width:     width,
-		height:    height,
-		imageType: imageType,
+		imageImpl: &imageImpl{
+			width:     width,
+			height:    height,
+			imageType: imageType,
+		},
 	}
 }
 
@@ -639,12 +703,11 @@ func (i *Image) canBePutOnAtlas() bool {
 	return i.width+i.paddingSize() <= maxSize && i.height+i.paddingSize() <= maxSize
 }
 
-func (i *Image) finalize() {
+func (i *imageImpl) cleanup() {
 	// A function from finalizer must not be blocked, but disposing operation can be blocked.
 	// Defer this operation until it becomes safe. (#913)
 	appendDeferred(func() {
-		i.deallocate()
-		runtime.SetFinalizer(i, nil)
+		i.deallocateImpl()
 	})
 }
 
@@ -653,7 +716,7 @@ func (i *Image) allocate(forbiddenBackends []*backend, asSource bool) {
 		panic("atlas: the image is already allocated")
 	}
 
-	runtime.SetFinalizer(i, (*Image).finalize)
+	i.cleanup = runtime.AddCleanup(i, (*imageImpl).cleanup, i.imageImpl)
 
 	if i.imageType == ImageTypeScreen {
 		if asSource {
@@ -661,8 +724,12 @@ func (i *Image) allocate(forbiddenBackends []*backend, asSource bool) {
 		}
 		// A screen image doesn't have a padding.
 		i.backend = &backend{
-			restorable: restorable.NewImage(i.width, i.height, restorable.ImageTypeScreen),
+			width:        i.width,
+			height:       i.height,
+			backendImage: graphicscommand.NewImage(i.width, i.height, true, ""),
+			screen:       true,
 		}
+		i.backend.clear(image.Rect(0, 0, i.width, i.height))
 		theBackends = append(theBackends, i.backend)
 		return
 	}
@@ -675,14 +742,13 @@ func (i *Image) allocate(forbiddenBackends []*backend, asSource bool) {
 			panic(fmt.Sprintf("atlas: the image being put on an atlas is too big: width: %d, height: %d", i.width, i.height))
 		}
 
-		typ := restorable.ImageTypeRegular
-		if i.imageType == ImageTypeVolatile {
-			typ = restorable.ImageTypeVolatile
-		}
 		i.backend = &backend{
-			restorable: restorable.NewImage(wp, hp, typ),
-			source:     asSource && typ == restorable.ImageTypeRegular,
+			width:        wp,
+			height:       hp,
+			backendImage: graphicscommand.NewImage(wp, hp, false, ""),
+			source:       asSource,
 		}
+		i.backend.clear(image.Rect(0, 0, wp, hp))
 		theBackends = append(theBackends, i.backend)
 		return
 	}
@@ -725,15 +791,14 @@ loop:
 		height *= 2
 	}
 
-	typ := restorable.ImageTypeRegular
-	if i.imageType == ImageTypeVolatile {
-		typ = restorable.ImageTypeVolatile
-	}
 	b := &backend{
-		restorable: restorable.NewImage(width, height, typ),
-		page:       packing.NewPage(width, height, maxSize),
-		source:     asSource,
+		width:        width,
+		height:       height,
+		backendImage: graphicscommand.NewImage(width, height, false, ""),
+		page:         packing.NewPage(width, height, maxSize),
+		source:       asSource,
 	}
+	b.clear(image.Rect(0, 0, width, height))
 	theBackends = append(theBackends, b)
 
 	n := b.page.Alloc(wp, hp)
@@ -752,10 +817,10 @@ func (i *Image) DumpScreenshot(graphicsDriver graphicsdriver.Graphics, path stri
 		panic("atlas: DumpScreenshots must be called in between BeginFrame and EndFrame")
 	}
 
-	return i.backend.restorable.Dump(graphicsDriver, path, blackbg, image.Rect(0, 0, i.width, i.height))
+	return i.backend.backendImage.Dump(graphicsDriver, path, blackbg, image.Rect(0, 0, i.width, i.height))
 }
 
-func EndFrame() error {
+func EndFrame(graphicsDriver graphicsdriver.Graphics) error {
 	backendsM.Lock()
 	defer backendsM.Unlock()
 	defer func() {
@@ -770,22 +835,75 @@ func EndFrame() error {
 		b.sourceInThisFrame = false
 	}
 
+	if theGPUResourcesState.isSavingGPUResourcesRequested() {
+		defer theGPUResourcesState.finishSavingGPUResources()
+
+		flushDeferred()
+		for _, b := range theBackends {
+			if b.backendImage == nil {
+				continue
+			}
+			var pixels *graphics.ManagedBytes
+			var region image.Rectangle
+			if !b.screen {
+				if b.page != nil {
+					region = b.page.AllocatedRegion()
+				} else {
+					// If a page doesn't exist, the image is not on an atlas.
+					region = image.Rect(0, 0, b.width, b.height)
+				}
+				if !region.Empty() {
+					var err error
+					pixels = graphics.NewManagedBytes(4*region.Dx()*region.Dy(), func(bytes []byte) {
+						args := []graphicsdriver.PixelsArgs{
+							{
+								Pixels: bytes,
+								Region: region,
+							},
+						}
+						err = b.backendImage.ReadPixels(graphicsDriver, args)
+					})
+					if err != nil {
+						return err
+					}
+				}
+			}
+			b.restoreInfo = restoreInfo{
+				valid:  true,
+				screen: b.screen,
+				pixels: pixels,
+				region: region,
+			}
+		}
+	}
+
 	return nil
 }
 
 func SwapBuffers(graphicsDriver graphicsdriver.Graphics) error {
-	func() {
-		backendsM.Lock()
-		defer backendsM.Unlock()
+	backendsM.Lock()
+	defer backendsM.Unlock()
 
-		if inFrame {
-			panic("atlas: inFrame must be false in SwapBuffer")
+	if inFrame {
+		panic("atlas: inFrame must be false in SwapBuffer")
+	}
+
+	if debug.IsDebug {
+		debug.FrameLogf("Internal image sizes:\n")
+		imgs := make([]*graphicscommand.Image, 0, len(theBackends))
+		for _, img := range theBackends {
+			if img.backendImage == nil {
+				continue
+			}
+			imgs = append(imgs, img.backendImage)
 		}
-	}()
+		graphicscommand.LogImagesInfo(imgs)
+	}
 
-	if err := restorable.SwapBuffers(graphicsDriver); err != nil {
+	if err := graphicscommand.FlushCommands(graphicsDriver, true); err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -808,7 +926,7 @@ func BeginFrame(graphicsDriver graphicsdriver.Graphics) error {
 
 	var err error
 	initOnce.Do(func() {
-		err = restorable.InitializeGraphicsDriverState(graphicsDriver)
+		err = graphicscommand.InitializeGraphicsDriverState(graphicsDriver)
 		if err != nil {
 			return
 		}
@@ -824,16 +942,49 @@ func BeginFrame(graphicsDriver graphicsdriver.Graphics) error {
 			minDestinationSize = 16
 		}
 		if maxSize == 0 {
-			maxSize = floorPowerOf2(restorable.MaxImageSize(graphicsDriver))
+			maxSize = floorPowerOf2(graphicscommand.MaxImageSize(graphicsDriver))
 		}
+		inited.Store(true)
 	})
 	if err != nil {
 		return err
 	}
 
-	// Restore images first before other image manipulations (#2075).
-	if err := restorable.RestoreIfNeeded(graphicsDriver); err != nil {
-		return err
+	if theGPUResourcesState.startRestoringGPUResourcesIfNeeded() {
+		if err := graphicscommand.ResetGraphicsDriverState(graphicsDriver); err != nil {
+			return err
+		}
+
+		// Dispose all the internal shaders.
+		// The current internal shader objects might have references to old GPU resources.
+		theShadersWithInternalShader.deallocateInternalShaders()
+
+		// Dispose all the images.
+		// The current internal image objects might have references to old GPU resources.
+		for _, b := range theBackends {
+			b.backendImage.Dispose()
+			b.backendImage = nil
+		}
+
+		// Restore all the images.
+		for _, b := range theBackends {
+			if !b.restoreInfo.valid {
+				continue
+			}
+			b.backendImage = graphicscommand.NewImage(b.width, b.height, b.restoreInfo.screen, "")
+			if b.restoreInfo.region != image.Rect(0, 0, b.width, b.height) {
+				b.clear(image.Rect(0, 0, b.width, b.height))
+			}
+			if b.restoreInfo.pixels != nil {
+				b.backendImage.WritePixels(b.restoreInfo.pixels, b.restoreInfo.region)
+			}
+		}
+	}
+
+	// Discard restore info whichever restoration is done or not.
+	for _, b := range theBackends {
+		// Do not release pixels here, as the command buffer might not be flushed yet.
+		b.restoreInfo = restoreInfo{}
 	}
 
 	flushDeferred()
@@ -850,5 +1001,65 @@ func DumpImages(graphicsDriver graphicsdriver.Graphics, dir string) (string, err
 		panic("atlas: DumpImages must be called in between BeginFrame and EndFrame")
 	}
 
-	return restorable.DumpImages(graphicsDriver, dir)
+	images := make([]*graphicscommand.Image, 0, len(theBackends))
+	for _, backend := range theBackends {
+		if backend.backendImage == nil {
+			continue
+		}
+		images = append(images, backend.backendImage)
+	}
+	return graphicscommand.DumpImages(images, graphicsDriver, dir)
+}
+
+func TotalGPUImageMemoryUsageInBytes() int64 {
+	backendsM.Lock()
+	defer backendsM.Unlock()
+
+	var sum int64
+	for _, b := range theBackends {
+		if b.backendImage == nil {
+			continue
+		}
+		w, h := b.backendImage.InternalSize()
+		sum += 4 * int64(w) * int64(h)
+	}
+	return sum
+}
+
+// SaveGPUResources saves GPU resources (textures and shaders) in CPU memory.
+//
+// Until GPU resources are saved, the app becomes suspended
+// until [RestoreGPUResources] or [ResumeApp] is called.
+//
+// If [RestoreGPUResources] is called, the saved resources are restored in the next frame.
+// If [ResumeApp] is called but not [RestoreGPUResources], the saved resources are discarded.
+func SaveGPUResources() {
+	if !inited.Load() {
+		return
+	}
+	// Suspend the app. [IsSuspended] will return true after the GPU resources are actually saved.
+	suspended.Store(true)
+	theGPUResourcesState.requestToSaveGPUResources()
+}
+
+// IsSuspended reports whether the app is currently suspended.
+func IsSuspended() bool {
+	return suspended.Load() && theGPUResourcesState.areGPUResourcesSaved()
+}
+
+// AreGPUResourcesSaved reports whether GPU resources are currently saved.
+func AreGPUResourcesSaved() bool {
+	return theGPUResourcesState.areGPUResourcesSaved()
+}
+
+// ResumeApp unfreezes the app previously frozen by [SaveGPUResources].
+func ResumeApp() {
+	suspended.Store(false)
+}
+
+// RestoreGPUResources restores GPU resources in the next frame if needed.
+// RestoreGPUResources reports whether there are GPU resources to be restored or not.
+func RestoreGPUResources() bool {
+	suspended.Store(false)
+	return theGPUResourcesState.requestToRestoreGPUResources()
 }

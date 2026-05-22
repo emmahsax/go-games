@@ -29,19 +29,41 @@ func (c *Conn) connect(display string) error {
 		return err
 	}
 
-	return c.postConnect()
+	return c.postConnect("")
 }
 
 // connect init from to the net.Conn,
 func (c *Conn) connectNet(netConn net.Conn) error {
 	c.conn = netConn
-	return c.postConnect()
+	return c.postConnect("")
+}
+
+// connectNetWithCookieHex initializes the X connection using an existing net.Conn and a hex-encoded
+// authentication cookie. The cookieHex parameter should be a 32-character hex string representing
+// the MIT-MAGIC-COOKIE-1 authentication data.
+func (c *Conn) connectNetWithCookieHex(netConn net.Conn, cookieHex string) error {
+	c.conn = netConn
+	return c.postConnect(cookieHex)
 }
 
 // do the postConnect action after Conn get it's underly net.Conn
-func (c *Conn) postConnect() error {
+func (c *Conn) postConnect(cookieHex string) error {
 	// Get authentication data
-	authName, authData, err := readAuthority(c.host, c.display)
+	var authName string
+	var authData []byte
+	var err error
+
+	if cookieHex == "" {
+		authName, authData, err = readAuthority(c.host, c.display)
+	} else {
+		authName, authData, err = readAuthorityFromCookieHex(cookieHex)
+		if err != nil {
+			// Early return with the magic cookie decoding error description.
+			// Server using magic cookie is surely not allowing to connect without authentication.
+			return fmt.Errorf("failed to use provided cookie: %w", err)
+		}
+	}
+
 	noauth := false
 	if err != nil {
 		Logger.Printf("Could not get authority info: %v", err)

@@ -243,7 +243,7 @@ func areSameUint32Array(a, b []uint32) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := 0; i < len(a); i++ {
+	for i := range a {
 		if a[i] != b[i] {
 			return false
 		}
@@ -292,7 +292,7 @@ func (g *Graphics) useProgram(program program, uniforms []uniformVariable, textu
 		if u.value == nil {
 			continue
 		}
-		if got, expected := len(u.value), u.typ.Uint32Count(); got != expected {
+		if got, expected := len(u.value), u.typ.DwordCount(); got != expected {
 			// Copy a shaderir.Type value once. Do not pass u.typ directly to fmt.Errorf arguments, or
 			// the value u would be allocated on heap.
 			typ := u.typ

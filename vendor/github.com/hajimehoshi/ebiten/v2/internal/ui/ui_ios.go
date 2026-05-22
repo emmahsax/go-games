@@ -37,6 +37,8 @@ package ui
 //   *scale = scene.screen.nativeScale;
 // }
 //
+// #cgo noescape displayInfo
+// #cgo nocallback displayInfo
 // static void displayInfo(float* width, float* height, float* scale, uintptr_t viewPtr) {
 //   *width = 0;
 //   *height = 0;
@@ -63,13 +65,16 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ebitengine/purego/objc"
+
+	"github.com/hajimehoshi/ebiten/v2/internal/color"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver/metal"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver/opengl"
 )
 
 type graphicsDriverCreatorImpl struct {
-	colorSpace graphicsdriver.ColorSpace
+	colorSpace color.ColorSpace
 }
 
 func (g *graphicsDriverCreatorImpl) newAuto() (graphicsdriver.Graphics, GraphicsLibrary, error) {
@@ -145,4 +150,12 @@ func (u *UserInterface) displayInfo() (int, int, float64, bool) {
 	width := int(dipFromNativePixels(float64(cWidth), scale))
 	height := int(dipFromNativePixels(float64(cHeight), scale))
 	return width, height, scale, true
+}
+
+func (u *UserInterface) RunOnMainThread(f func()) {
+	b := objc.NewBlock(func(_ objc.Block) {
+		f()
+	})
+	defer b.Release()
+	dispatchSync(dispatchMainQ, b)
 }

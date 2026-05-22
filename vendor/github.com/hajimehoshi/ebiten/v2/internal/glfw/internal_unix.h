@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: 2006-2019 Camilla Löwy <elmindreda@glfw.org>
 // SPDX-FileCopyrightText: 2023 The Ebitengine Authors
 
-//go:build darwin || freebsd || linux || netbsd || openbsd
+//go:build freebsd || linux || netbsd || openbsd
 
 #pragma once
 
@@ -55,7 +55,7 @@ typedef struct _GLFWmutex       _GLFWmutex;
 
 typedef void (* _GLFWmakecontextcurrentfun)(_GLFWwindow*);
 typedef void (* _GLFWswapbuffersfun)(_GLFWwindow*);
-typedef void (* _GLFWswapintervalfun)(int);
+typedef void (* _GLFWswapintervalfun)(_GLFWwindow*, int);
 typedef int (* _GLFWextensionsupportedfun)(const char*);
 typedef GLFWglproc (* _GLFWgetprocaddressfun)(const char*);
 typedef void (* _GLFWdestroycontextfun)(_GLFWwindow*);

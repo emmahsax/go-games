@@ -100,17 +100,19 @@ const (
 type context struct {
 	ctx gl.Context
 
-	locationCache      *locationCache
-	screenFramebuffer  framebufferNative // This might not be the default frame buffer '0' (e.g. iOS).
-	lastFramebuffer    framebufferNative
-	lastTexture        textureNative
-	lastRenderbuffer   renderbufferNative
-	lastViewportWidth  int
-	lastViewportHeight int
-	lastBlend          graphicsdriver.Blend
-	maxTextureSize     int
-	maxTextureSizeOnce sync.Once
-	initOnce           sync.Once
+	locationCache                   *locationCache
+	screenFramebuffer               framebufferNative // This might not be the default frame buffer '0' (e.g. iOS).
+	lastFramebuffer                 framebufferNative
+	lastTexture                     textureNative
+	lastRenderbuffer                renderbufferNative
+	lastViewportWidth               int
+	lastViewportHeight              int
+	lastBlend                       graphicsdriver.Blend
+	maxTextureSize                  int
+	maxTextureSizeOnce              sync.Once
+	initOnce                        sync.Once
+	hasKHRParallelShaderCompile     bool
+	hasKHRParallelShaderCompileOnce sync.Once
 }
 
 func (c *context) bindTexture(t textureNative) {
@@ -176,16 +178,16 @@ func (c *context) getMaxTextureSize() int {
 }
 
 func (c *context) reset() error {
-	var err1 error
+	var err error
 	c.initOnce.Do(func() {
 		// Load OpenGL functions after WGL is initialized especially for Windows (#2452).
-		if err := c.ctx.LoadFunctions(); err != nil {
-			err1 = err
+		if contextErr := c.ctx.LoadFunctions(); contextErr != nil {
+			err = contextErr
 			return
 		}
 	})
-	if err1 != nil {
-		return err1
+	if err != nil {
+		return err
 	}
 
 	c.locationCache = newLocationCache()
@@ -440,6 +442,8 @@ func (c *context) uniforms(p program, location string, v []uint32, typ shaderir.
 	}
 
 	switch base {
+	case shaderir.Bool:
+		c.ctx.Uniform1iv(int32(l), uint32sToInt32s(v))
 	case shaderir.Float:
 		c.ctx.Uniform1fv(int32(l), uint32sToFloat32s(v))
 	case shaderir.Int:
@@ -495,4 +499,15 @@ func shouldCheckFramebufferStatus() bool {
 	//
 	// TODO: Should this be avoided in all environments?
 	return runtime.GOOS != "js"
+}
+
+func (c *context) hasParallelShaderCompile() bool {
+	c.hasKHRParallelShaderCompileOnce.Do(func() {
+		if runtime.GOOS != "js" {
+			return
+		}
+		ext := c.ctx.GetExtension("KHR_parallel_shader_compile")
+		c.hasKHRParallelShaderCompile = ext != nil
+	})
+	return c.hasKHRParallelShaderCompile
 }

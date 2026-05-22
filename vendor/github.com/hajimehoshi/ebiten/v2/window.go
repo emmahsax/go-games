@@ -18,6 +18,8 @@ import (
 	"image"
 	"sync/atomic"
 
+	"github.com/hajimehoshi/ebiten/v2/internal/colormode"
+	"github.com/hajimehoshi/ebiten/v2/internal/inputstate"
 	"github.com/hajimehoshi/ebiten/v2/internal/ui"
 )
 
@@ -106,6 +108,25 @@ func SetWindowTitle(title string) {
 	ui.Get().Window().SetTitle(title)
 }
 
+// WindowColorMode returns the current color mode of the window.
+//
+// WindowColorMode returns ColorModeUnknown if the platform is not a desktop.
+//
+// WindowColorMode is concurrent-safe.
+func WindowColorMode() ColorMode {
+	return ColorMode(ui.Get().Window().ColorMode())
+}
+
+// SetWindowColorMode sets the color mode of the window.
+// If ColorModeUnknown is passed, the window color mode is reset to the system default.
+//
+// SetWindowColorMode does nothing if the platform is not a desktop.
+//
+// SetWindowColorMode is concurrent-safe.
+func SetWindowColorMode(colorMode ColorMode) {
+	ui.Get().Window().SetColorMode(colormode.ColorMode(colorMode))
+}
+
 // SetWindowIcon sets the icon of the game window.
 //
 // If len(iconImages) is 0, SetWindowIcon reverts the icon to the default one.
@@ -163,18 +184,10 @@ var (
 	windowPositionSetExplicitly atomic.Bool
 )
 
-func initializeWindowPositionIfNeeded(width, height int) {
-	if !windowPositionSetExplicitly.Load() {
-		sw, sh := ui.Get().Monitor().Size()
-		x, y := ui.InitialWindowPosition(sw, sh, width, height)
-		ui.Get().Window().SetPosition(x, y)
-	}
-}
-
 // WindowSize returns the window size on desktops.
 // WindowSize returns (0, 0) on other environments.
 //
-// Even if the application is in fullscreen mode, WindowSize returns the original window size
+// Even if the application is in fullscreen mode, WindowSize returns the original window size.
 // If you need the fullscreen dimensions, see Monitor().Size() instead.
 //
 // WindowSize is concurrent-safe.
@@ -293,7 +306,7 @@ func RestoreWindow() {
 //
 // IsWindowBeingClosed is concurrent-safe.
 func IsWindowBeingClosed() bool {
-	return theInputState.windowBeingClosed()
+	return inputstate.Get().WindowBeingClosed()
 }
 
 // SetWindowClosingHandled sets whether the window closing is handled or not on desktops. The default state is false.

@@ -28,7 +28,6 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicscommand"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver"
 	"github.com/hajimehoshi/ebiten/v2/internal/hook"
-	"github.com/hajimehoshi/ebiten/v2/internal/restorable"
 )
 
 var (
@@ -43,11 +42,9 @@ func (u *UserInterface) init() error {
 	u.userInterfaceImpl = userInterfaceImpl{
 		graphicsLibraryInitCh: make(chan struct{}),
 		errCh:                 make(chan error),
-
-		// Give a default outside size so that the game can start without initializing them.
-		outsideWidth:  640,
-		outsideHeight: 480,
 	}
+	// Give a default outside size so that the game can start without initializing them.
+	u.userInterfaceImpl.outsideSize.Store(pointF{x: 640, y: 480})
 	u.foreground.Store(true)
 	return nil
 }
@@ -83,12 +80,16 @@ func (u *UserInterface) Update() error {
 	return nil
 }
 
+type pointF struct {
+	x float64
+	y float64
+}
+
 type userInterfaceImpl struct {
 	graphicsDriver        graphicsdriver.Graphics
 	graphicsLibraryInitCh chan struct{}
 
-	outsideWidth  float64
-	outsideHeight float64
+	outsideSize atomic.Value
 
 	foreground atomic.Bool
 	errCh      chan error
@@ -101,13 +102,10 @@ type userInterfaceImpl struct {
 	fpsMode  atomic.Int32
 	renderer Renderer
 
-	strictContextRestoration     atomic.Bool
-	strictContextRestorationOnce sync.Once
-
 	// uiView is used only on iOS.
 	uiView atomic.Uintptr
 
-	m sync.RWMutex
+	m sync.Mutex
 }
 
 func (u *UserInterface) SetForeground(foreground bool) error {
@@ -159,11 +157,6 @@ func (u *UserInterface) runMobile(game Game, options *RunOptions) (err error) {
 	u.graphicsDriver = g
 	u.setGraphicsLibrary(lib)
 	close(u.graphicsLibraryInitCh)
-	if options.StrictContextRestoration {
-		u.strictContextRestoration.Store(true)
-	} else {
-		restorable.Disable()
-	}
 
 	for {
 		if err := u.update(); err != nil {
@@ -174,10 +167,8 @@ func (u *UserInterface) runMobile(game Game, options *RunOptions) (err error) {
 
 // outsideSize must be called on the same goroutine as update().
 func (u *UserInterface) outsideSize() (float64, float64) {
-	u.m.RLock()
-	defer u.m.RUnlock()
-
-	return u.outsideWidth, u.outsideHeight
+	s := u.userInterfaceImpl.outsideSize.Load().(pointF)
+	return s.x, s.y
 }
 
 func (u *UserInterface) update() error {
@@ -197,12 +188,7 @@ func (u *UserInterface) update() error {
 //
 // SetOutsideSize is concurrent safe.
 func (u *UserInterface) SetOutsideSize(outsideWidth, outsideHeight float64) {
-	u.m.Lock()
-	defer u.m.Unlock()
-	if u.outsideWidth != outsideWidth || u.outsideHeight != outsideHeight {
-		u.outsideWidth = outsideWidth
-		u.outsideHeight = outsideHeight
-	}
+	u.userInterfaceImpl.outsideSize.Store(pointF{x: outsideWidth, y: outsideHeight})
 }
 
 func (u *UserInterface) CursorMode() CursorMode {
@@ -268,12 +254,20 @@ func (u *UserInterface) Window() Window {
 }
 
 type Monitor struct {
+	monitor monitor
+
+	// expireAt is a tick when the cached values expire.
+	// As there is no commmon way to detect monitor changes in Android and iOS,
+	// the values are invalidated regularly.
+	expireAt atomic.Int64
+
+	m sync.Mutex
+}
+
+type monitor struct {
 	width             int
 	height            int
 	deviceScaleFactor float64
-	inited            atomic.Bool
-
-	m sync.Mutex
 }
 
 var theMonitor = &Monitor{}
@@ -282,35 +276,42 @@ func (m *Monitor) Name() string {
 	return ""
 }
 
-func (m *Monitor) ensureInit() {
-	if m.inited.Load() {
-		return
+func (m *Monitor) ensureValues() monitor {
+	if m.expireAt.Load() > theUI.Tick() {
+		return m.monitor
 	}
 
 	m.m.Lock()
 	defer m.m.Unlock()
 	// Re-check the state since the state might be changed while locking.
-	if m.inited.Load() {
-		return
+	if m.expireAt.Load() > theUI.Tick() {
+		return m.monitor
 	}
 	width, height, scale, ok := theUI.displayInfo()
 	if !ok {
-		return
+		// This can happen e.g. when JVM is not ready.
+		return monitor{
+			width:             0,
+			height:            0,
+			deviceScaleFactor: 1,
+		}
 	}
-	m.width = width
-	m.height = height
-	m.deviceScaleFactor = scale
-	m.inited.Store(true)
+	m.monitor = monitor{
+		width:             width,
+		height:            height,
+		deviceScaleFactor: scale,
+	}
+	m.expireAt.Store(theUI.Tick() + 1)
+	return m.monitor
 }
 
 func (m *Monitor) DeviceScaleFactor() float64 {
-	m.ensureInit()
-	return m.deviceScaleFactor
+	return m.ensureValues().deviceScaleFactor
 }
 
 func (m *Monitor) Size() (int, int) {
-	m.ensureInit()
-	return m.width, m.height
+	mon := m.ensureValues()
+	return mon.width, mon.height
 }
 
 func (u *UserInterface) AppendMonitors(mons []*Monitor) []*Monitor {
@@ -321,8 +322,8 @@ func (u *UserInterface) Monitor() *Monitor {
 	return theMonitor
 }
 
-func (u *UserInterface) UpdateInput(keys map[Key]struct{}, runes []rune, touches []TouchForInput) {
-	u.updateInputStateFromOutside(keys, runes, touches)
+func (u *UserInterface) UpdateInput(keyPressedTimes, keyReleasedTimes [KeyMax + 1]InputTime, runes []rune, touches []TouchForInput) {
+	u.updateInputStateFromOutside(keyPressedTimes, keyReleasedTimes, runes, touches)
 	if FPSModeType(u.fpsMode.Load()) == FPSModeVsyncOffMinimum {
 		u.renderer.RequestRenderIfNeeded()
 	}
@@ -346,10 +347,6 @@ func (u *UserInterface) ScheduleFrame() {
 
 func (u *UserInterface) updateIconIfNeeded() error {
 	return nil
-}
-
-func (u *UserInterface) UsesStrictContextRestoration() bool {
-	return u.strictContextRestoration.Load()
 }
 
 func IsScreenTransparentAvailable() bool {

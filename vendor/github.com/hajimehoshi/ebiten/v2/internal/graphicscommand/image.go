@@ -59,7 +59,7 @@ func genNextImageID() int {
 
 // NewImage returns a new image.
 //
-// Note that the image is not initialized yet.
+// The pixel data just after NewImage is undetermined.
 func NewImage(width, height int, screenFramebuffer bool, attribute string) *Image {
 	i := &Image{
 		width:     width,
@@ -135,7 +135,7 @@ func (i *Image) InternalSize() (int, int) {
 //
 // If the source image is not specified, i.e., src is nil and there is no image in the uniform variables, the
 // elements for the source image are not used.
-func (i *Image) DrawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertices []float32, indices []uint32, blend graphicsdriver.Blend, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle, shader *Shader, uniforms []uint32, fillRule graphicsdriver.FillRule) {
+func (i *Image) DrawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertices []float32, indices []uint32, blend graphicsdriver.Blend, dstRegion image.Rectangle, srcRegions [graphics.ShaderSrcImageCount]image.Rectangle, shader *Shader, uniforms []uint32) {
 	for _, src := range srcs {
 		if src == nil {
 			continue
@@ -147,7 +147,7 @@ func (i *Image) DrawTriangles(srcs [graphics.ShaderSrcImageCount]*Image, vertice
 	}
 	i.flushBufferedWritePixels()
 
-	theCommandQueueManager.enqueueDrawTrianglesCommand(i, srcs, vertices, indices, blend, dstRegion, srcRegions, shader, uniforms, fillRule)
+	theCommandQueueManager.enqueueDrawTrianglesCommand(i, srcs, vertices, indices, blend, dstRegion, srcRegions, shader, uniforms)
 }
 
 // ReadPixels reads the image's pixels.
@@ -235,10 +235,12 @@ func LogImagesInfo(images []*Image) {
 	})
 	for _, i := range images {
 		w, h := i.InternalSize()
-		var screen string
-		if i.screen {
-			screen = " (screen)"
+		var attr string
+		if i.attribute != "" {
+			attr = " (" + i.attribute + ")"
+		} else if i.screen {
+			attr = " (screen)"
 		}
-		debug.FrameLogf("  %d: (%d, %d)%s\n", i.id, w, h, screen)
+		debug.FrameLogf("  %d: (%d, %d)%s\n", i.id, w, h, attr)
 	}
 }

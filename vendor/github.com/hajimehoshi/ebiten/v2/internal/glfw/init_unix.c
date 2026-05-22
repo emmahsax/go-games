@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: 2006-2018 Camilla Löwy <elmindreda@glfw.org>
 // SPDX-FileCopyrightText: 2023 The Ebitengine Authors
 
-//go:build darwin || freebsd || linux || netbsd || openbsd
+//go:build freebsd || linux || netbsd || openbsd
 
 #include "internal_unix.h"
 
@@ -338,21 +338,6 @@ GLFWAPI void glfwInitHint(int hint, int value)
 
     _glfwInputError(GLFW_INVALID_ENUM,
                     "Invalid init hint 0x%08X", hint);
-}
-
-GLFWAPI void glfwGetVersion(int* major, int* minor, int* rev)
-{
-    if (major != NULL)
-        *major = GLFW_VERSION_MAJOR;
-    if (minor != NULL)
-        *minor = GLFW_VERSION_MINOR;
-    if (rev != NULL)
-        *rev = GLFW_VERSION_REVISION;
-}
-
-GLFWAPI const char* glfwGetVersionString(void)
-{
-    return _glfwPlatformGetVersionString();
 }
 
 GLFWAPI int glfwGetError(const char** description)

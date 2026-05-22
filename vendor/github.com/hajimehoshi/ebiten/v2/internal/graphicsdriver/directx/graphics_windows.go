@@ -32,15 +32,6 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/internal/winver"
 )
 
-type stencilMode int
-
-const (
-	noStencil stencilMode = iota
-	incrementStencil
-	invertStencil
-	drawWithStencil
-)
-
 const frameCount = 2
 
 func pow2(x uint32) uint32 {
@@ -100,7 +91,7 @@ func NewGraphics() (graphicsdriver.Graphics, error) {
 		env = os.Getenv("EBITEN_DIRECTX")
 	}
 
-	for _, t := range strings.Split(env, ",") {
+	for t := range strings.SplitSeq(env, ",") {
 		t := strings.TrimSpace(t)
 		switch {
 		case t == "warp":
@@ -147,9 +138,7 @@ func NewGraphics() (graphicsdriver.Graphics, error) {
 }
 
 type graphicsInfra struct {
-	factory    *_IDXGIFactory
-	swapChain  *_IDXGISwapChain
-	swapChain4 *_IDXGISwapChain4
+	*graphicsInfraResources
 
 	allowTearing bool
 
@@ -160,14 +149,24 @@ type graphicsInfra struct {
 	lastTime time.Time
 
 	bufferCount int
+
+	cleanup runtime.Cleanup
+}
+
+type graphicsInfraResources struct {
+	factory    *_IDXGIFactory
+	swapChain  *_IDXGISwapChain
+	swapChain4 *_IDXGISwapChain4
 }
 
 // newGraphicsInfra takes the ownership of the given factory.
 func newGraphicsInfra(factory *_IDXGIFactory) (*graphicsInfra, error) {
 	g := &graphicsInfra{
-		factory: factory,
+		graphicsInfraResources: &graphicsInfraResources{
+			factory: factory,
+		},
 	}
-	runtime.SetFinalizer(g, (*graphicsInfra).release)
+	g.cleanup = runtime.AddCleanup(g, (*graphicsInfraResources).releaseResources, g.graphicsInfraResources)
 
 	if f, err := g.factory.QueryInterface(&_IID_IDXGIFactory5); err == nil && f != nil {
 		factory := (*_IDXGIFactory5)(f)
@@ -183,6 +182,11 @@ func newGraphicsInfra(factory *_IDXGIFactory) (*graphicsInfra, error) {
 }
 
 func (g *graphicsInfra) release() {
+	g.releaseResources()
+	g.cleanup.Stop()
+}
+
+func (g *graphicsInfraResources) releaseResources() {
 	if g.factory != nil {
 		g.factory.Release()
 		g.factory = nil

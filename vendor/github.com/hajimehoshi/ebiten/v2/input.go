@@ -15,11 +15,9 @@
 package ebiten
 
 import (
-	"io/fs"
-	"sync"
-
 	"github.com/hajimehoshi/ebiten/v2/internal/gamepad"
 	"github.com/hajimehoshi/ebiten/v2/internal/gamepaddb"
+	"github.com/hajimehoshi/ebiten/v2/internal/inputstate"
 	"github.com/hajimehoshi/ebiten/v2/internal/ui"
 )
 
@@ -36,7 +34,7 @@ import (
 //
 // On Android (ebitenmobile), EbitenView must be focusable to enable to handle keyboard keys.
 func AppendInputChars(runes []rune) []rune {
-	return theInputState.appendInputChars(runes)
+	return inputstate.Get().AppendInputChars(runes)
 }
 
 // InputChars return "printable" runes read from the keyboard at the time Update is called.
@@ -58,7 +56,7 @@ func InputChars() []rune {
 //
 // On Android (ebitenmobile), EbitenView must be focusable to enable to handle keyboard keys.
 func IsKeyPressed(key Key) bool {
-	return theInputState.isKeyPressed(key)
+	return inputstate.Get().IsKeyPressed(ui.Key(key))
 }
 
 // KeyName returns a key name for the current keyboard layout.
@@ -74,8 +72,8 @@ func KeyName(key Key) string {
 	return ui.Get().KeyName(ui.Key(key))
 }
 
-// CursorPosition returns a position of a mouse cursor relative to the game screen (window). The cursor position is
-// 'logical' position and this considers the scale of the screen.
+// CursorPosition returns a position of a mouse cursor relative to the game screen (window).
+// The cursor position is 'logical' position and this considers the scale of the screen.
 //
 // CursorPosition returns (0, 0) before the main loop on desktops and browsers.
 //
@@ -83,8 +81,20 @@ func KeyName(key Key) string {
 //
 // CursorPosition is concurrent-safe.
 func CursorPosition() (x, y int) {
-	cx, cy := theInputState.cursorPosition()
+	cx, cy := inputstate.Get().CursorPosition()
 	return int(cx), int(cy)
+}
+
+// CursorPositionF returns a high-precision position of a mouse cursor relative to the game screen (window).
+// The cursor position is 'logical' position and this considers the scale of the screen.
+//
+// CursorPositionF returns (0, 0) before the main loop on desktops and browsers.
+//
+// CursorPositionF always returns (0, 0) on mobile native applications.
+//
+// CursorPositionF is concurrent-safe.
+func CursorPositionF() (x, y float64) {
+	return inputstate.Get().CursorPosition()
 }
 
 // Wheel returns x and y offsets of the mouse wheel or touchpad scroll.
@@ -92,7 +102,7 @@ func CursorPosition() (x, y int) {
 //
 // Wheel is concurrent-safe.
 func Wheel() (xoff, yoff float64) {
-	return theInputState.wheel()
+	return inputstate.Get().Wheel()
 }
 
 // IsMouseButtonPressed returns a boolean indicating whether mouseButton is pressed.
@@ -102,7 +112,7 @@ func Wheel() (xoff, yoff float64) {
 //
 // IsMouseButtonPressed is concurrent-safe.
 func IsMouseButtonPressed(mouseButton MouseButton) bool {
-	return theInputState.isMouseButtonPressed(mouseButton)
+	return inputstate.Get().IsMouseButtonPressed(ui.MouseButton(mouseButton))
 }
 
 // GamepadID represents a gamepad identifier.
@@ -173,6 +183,7 @@ func GamepadAxisNum(id GamepadID) int {
 }
 
 // GamepadAxisValue returns a float value [-1.0 - 1.0] of the given gamepad (id)'s axis (axis).
+// The value depends on the gamepad layout.
 //
 // GamepadAxisValue is concurrent-safe.
 func GamepadAxisValue(id GamepadID, axis GamepadAxisType) float64 {
@@ -240,6 +251,8 @@ func IsGamepadButtonPressed(id GamepadID, button GamepadButton) bool {
 }
 
 // StandardGamepadAxisValue returns a float value [-1.0 - 1.0] of the given gamepad (id)'s standard axis (axis).
+// For a horizontal axis, -1.0 means left and 1.0 means right.
+// For a vertical axis, -1.0 means up and 1.0 means down.
 //
 // StandardGamepadAxisValue returns 0 when the gamepad doesn't have a standard gamepad layout mapping.
 //
@@ -363,7 +376,7 @@ type TouchID int
 //
 // AppendTouchIDs is concurrent-safe.
 func AppendTouchIDs(touches []TouchID) []TouchID {
-	return theInputState.appendTouchIDs(touches)
+	return inputstate.AppendTouchIDs(touches)
 }
 
 // TouchIDs returns the current touch states.
@@ -379,99 +392,5 @@ func TouchIDs() []TouchID {
 //
 // TouchPosition is concurrent-safe.
 func TouchPosition(id TouchID) (int, int) {
-	return theInputState.touchPosition(id)
-}
-
-var theInputState inputState
-
-type inputState struct {
-	state ui.InputState
-	m     sync.Mutex
-}
-
-func (i *inputState) update(fn func(*ui.InputState)) {
-	i.m.Lock()
-	defer i.m.Unlock()
-	fn(&i.state)
-}
-
-func (i *inputState) appendInputChars(runes []rune) []rune {
-	i.m.Lock()
-	defer i.m.Unlock()
-	return append(runes, i.state.Runes...)
-}
-
-func (i *inputState) isKeyPressed(key Key) bool {
-	if !key.isValid() {
-		return false
-	}
-
-	i.m.Lock()
-	defer i.m.Unlock()
-
-	switch key {
-	case KeyAlt:
-		return i.state.KeyPressed[ui.KeyAltLeft] || i.state.KeyPressed[ui.KeyAltRight]
-	case KeyControl:
-		return i.state.KeyPressed[ui.KeyControlLeft] || i.state.KeyPressed[ui.KeyControlRight]
-	case KeyShift:
-		return i.state.KeyPressed[ui.KeyShiftLeft] || i.state.KeyPressed[ui.KeyShiftRight]
-	case KeyMeta:
-		return i.state.KeyPressed[ui.KeyMetaLeft] || i.state.KeyPressed[ui.KeyMetaRight]
-	default:
-		return i.state.KeyPressed[key]
-	}
-}
-
-func (i *inputState) cursorPosition() (float64, float64) {
-	i.m.Lock()
-	defer i.m.Unlock()
-	return i.state.CursorX, i.state.CursorY
-}
-
-func (i *inputState) wheel() (float64, float64) {
-	i.m.Lock()
-	defer i.m.Unlock()
-	return i.state.WheelX, i.state.WheelY
-}
-
-func (i *inputState) isMouseButtonPressed(mouseButton MouseButton) bool {
-	i.m.Lock()
-	defer i.m.Unlock()
-	return i.state.MouseButtonPressed[mouseButton]
-}
-
-func (i *inputState) appendTouchIDs(touches []TouchID) []TouchID {
-	i.m.Lock()
-	defer i.m.Unlock()
-
-	for _, t := range i.state.Touches {
-		touches = append(touches, TouchID(t.ID))
-	}
-	return touches
-}
-
-func (i *inputState) touchPosition(id TouchID) (int, int) {
-	i.m.Lock()
-	defer i.m.Unlock()
-
-	for _, t := range i.state.Touches {
-		if id != TouchID(t.ID) {
-			continue
-		}
-		return t.X, t.Y
-	}
-	return 0, 0
-}
-
-func (i *inputState) windowBeingClosed() bool {
-	i.m.Lock()
-	defer i.m.Unlock()
-	return i.state.WindowBeingClosed
-}
-
-func (i *inputState) droppedFiles() fs.FS {
-	i.m.Lock()
-	defer i.m.Unlock()
-	return i.state.DroppedFiles
+	return inputstate.Get().TouchPosition(ui.TouchID(id))
 }
