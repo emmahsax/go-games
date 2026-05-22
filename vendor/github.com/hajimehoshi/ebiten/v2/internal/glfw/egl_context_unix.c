@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: 2006-2019 Camilla Löwy <elmindreda@glfw.org>
 // SPDX-FileCopyrightText: 2023 The Ebitengine Authors
 
-//go:build darwin || freebsd || linux || netbsd || openbsd
+//go:build freebsd || linux || netbsd || openbsd
 
 #include "internal_unix.h"
 
@@ -244,7 +244,7 @@ static void swapBuffersEGL(_GLFWwindow* window)
     eglSwapBuffers(_glfw.egl.display, window->context.egl.surface);
 }
 
-static void swapIntervalEGL(int interval)
+static void swapIntervalEGL(_GLFWwindow* window, int interval)
 {
     eglSwapInterval(_glfw.egl.display, interval);
 }

@@ -8,6 +8,7 @@ package glfw
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unsafe"
 
@@ -288,13 +289,7 @@ func swapBuffersWGL(window *Window) error {
 	return nil
 }
 
-func swapIntervalWGL(interval int) error {
-	ptr, err := _glfw.contextSlot.get()
-	if err != nil {
-		return err
-	}
-	window := (*Window)(unsafe.Pointer(ptr))
-
+func swapIntervalWGL(window *Window, interval int) error {
 	window.context.platform.interval = interval
 
 	if window.monitor == nil && winver.IsWindowsVistaOrGreater() {
@@ -337,12 +332,7 @@ func extensionSupportedWGL(extension string) bool {
 		return false
 	}
 
-	for _, str := range strings.Split(extensions, " ") {
-		if extension == str {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Split(extensions, " "), extension)
 }
 
 func getProcAddressWGL(procname string) uintptr {

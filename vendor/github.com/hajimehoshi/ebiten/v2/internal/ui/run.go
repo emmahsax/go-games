@@ -47,6 +47,7 @@ func (u *UserInterface) runMultiThread(game Game, options *RunOptions) error {
 	// Run the render thread.
 	wg.Go(func() error {
 		defer cancel()
+
 		graphicscommand.LoopRenderThread(ctx)
 		return nil
 	})
@@ -57,8 +58,8 @@ func (u *UserInterface) runMultiThread(game Game, options *RunOptions) error {
 
 		var err error
 		u.mainThread.Call(func() {
-			if err1 := u.initOnMainThread(options); err1 != nil {
-				err = err1
+			if mainErr := u.initOnMainThread(options); mainErr != nil {
+				err = mainErr
 			}
 		})
 		if err != nil {

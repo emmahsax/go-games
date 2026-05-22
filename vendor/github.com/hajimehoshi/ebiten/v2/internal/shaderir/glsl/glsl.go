@@ -153,7 +153,6 @@ func Compile(p *shaderir.Program, version GLSLVersion) (vertexShader, fragmentSh
 			// When a vertex entry point is not defined, allow to put all the functions. This is useful for testing.
 			funcs = make([]*shaderir.Func, 0, len(p.Funcs))
 			for _, f := range p.Funcs {
-				f := f
 				funcs = append(funcs, &f)
 			}
 		}
@@ -239,7 +238,6 @@ func Compile(p *shaderir.Program, version GLSLVersion) (vertexShader, fragmentSh
 			// When a fragment entry point is not defined, allow to put all the functions. This is useful for testing.
 			funcs = make([]*shaderir.Func, 0, len(p.Funcs))
 			for _, f := range p.Funcs {
-				f := f
 				funcs = append(funcs, &f)
 			}
 		}
@@ -508,12 +506,24 @@ func (c *compileContext) block(p *shaderir.Program, topBlock, block *shaderir.Bl
 			for _, exp := range e.Exprs[1:] {
 				args = append(args, expr(&exp))
 			}
-			f := expr(&e.Exprs[0])
-			if f == "texelFetch" {
-				return fmt.Sprintf("%s(%s, ivec2(%s), 0)", f, args[0], args[1])
+			callee := e.Exprs[0]
+			if callee.Type == shaderir.BuiltinFuncExpr {
+				if c.unit == shaderir.Pixels && callee.BuiltinFunc == shaderir.TexelAt {
+					return fmt.Sprintf("%s(%s, ivec2(%s), 0)", expr(&callee), args[0], args[1])
+				}
+				if callee.BuiltinFunc == shaderir.Min || callee.BuiltinFunc == shaderir.Max {
+					result := args[0]
+					for i := 1; i < len(args); i++ {
+						result = fmt.Sprintf("%s(%s, %s)", expr(&callee), result, args[i])
+					}
+					return result
+				}
+				if callee.BuiltinFunc == shaderir.FrontFacing {
+					return "gl_FrontFacing"
+				}
 			}
 			// Using parentheses at the callee is illegal.
-			return fmt.Sprintf("%s(%s)", f, strings.Join(args, ", "))
+			return fmt.Sprintf("%s(%s)", expr(&callee), strings.Join(args, ", "))
 		case shaderir.FieldSelector:
 			return fmt.Sprintf("(%s).%s", expr(&e.Exprs[0]), expr(&e.Exprs[1]))
 		case shaderir.Index:

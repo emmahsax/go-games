@@ -15,16 +15,68 @@
 package atlas
 
 import (
+	"fmt"
 	"runtime"
+	"sync"
+	"weak"
 
-	"github.com/hajimehoshi/ebiten/v2/internal/restorable"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/hajimehoshi/ebiten/v2/internal/builtinshader"
+	"github.com/hajimehoshi/ebiten/v2/internal/graphics"
+	"github.com/hajimehoshi/ebiten/v2/internal/graphicscommand"
 	"github.com/hajimehoshi/ebiten/v2/internal/shaderir"
 )
 
+// shadersWithInternalShader keeps track of shaders that have internal graphicscommand.Shader.
+type shadersWithInternalShader struct {
+	shaders map[weak.Pointer[Shader]]struct{}
+	m       sync.Mutex
+}
+
+func (s *shadersWithInternalShader) add(shader *Shader) {
+	s.m.Lock()
+	defer s.m.Unlock()
+	if s.shaders == nil {
+		s.shaders = map[weak.Pointer[Shader]]struct{}{}
+	}
+	s.shaders[weak.Make(shader)] = struct{}{}
+}
+
+func (s *shadersWithInternalShader) remove(shader *Shader) {
+	s.m.Lock()
+	defer s.m.Unlock()
+	delete(s.shaders, weak.Make(shader))
+}
+
+func (s *shadersWithInternalShader) deallocateInternalShaders() {
+	s.m.Lock()
+	shaders := make([]weak.Pointer[Shader], 0, len(s.shaders))
+	for shader := range s.shaders {
+		shaders = append(shaders, shader)
+	}
+	s.m.Unlock()
+
+	for _, shader := range shaders {
+		// deallocate invokes the internal shader's Dispose method.
+		if shader := shader.Value(); shader != nil {
+			shader.deallocate()
+		}
+	}
+
+	s.m.Lock()
+	clear(s.shaders)
+	s.m.Unlock()
+}
+
+var theShadersWithInternalShader shadersWithInternalShader
+
 type Shader struct {
-	ir     *shaderir.Program
-	shader *restorable.Shader
-	name   string
+	ir      *shaderir.Program
+	shader  *graphicscommand.Shader
+	unit    shaderir.Unit
+	name    string
+	cleanup runtime.Cleanup
 }
 
 func NewShader(ir *shaderir.Program, name string) *Shader {
@@ -32,23 +84,23 @@ func NewShader(ir *shaderir.Program, name string) *Shader {
 	return &Shader{
 		ir:   ir,
 		name: name,
+		unit: ir.Unit,
 	}
 }
 
-func (s *Shader) finalize() {
-	// A function from finalizer must not be blocked, but disposing operation can be blocked.
-	// Defer this operation until it becomes safe. (#913)
-	appendDeferred(func() {
-		s.deallocate()
-	})
-}
-
-func (s *Shader) ensureShader() *restorable.Shader {
+func (s *Shader) ensureShader() *graphicscommand.Shader {
 	if s.shader != nil {
 		return s.shader
 	}
-	s.shader = restorable.NewShader(s.ir, s.name)
-	runtime.SetFinalizer(s, (*Shader).finalize)
+	s.shader = graphicscommand.NewShader(s.ir, s.name)
+	s.cleanup = runtime.AddCleanup(s, func(shader *graphicscommand.Shader) {
+		// A function from cleanup must not be blocked, but disposing operation can be blocked.
+		// Defer this operation until it becomes safe. (#913)
+		appendDeferred(func() {
+			shader.Dispose()
+		})
+	}, s.shader)
+	theShadersWithInternalShader.add(s)
 	return s.shader
 }
 
@@ -68,15 +120,52 @@ func (s *Shader) Deallocate() {
 }
 
 func (s *Shader) deallocate() {
-	runtime.SetFinalizer(s, nil)
+	s.cleanup.Stop()
 	if s.shader == nil {
 		return
 	}
 	s.shader.Dispose()
 	s.shader = nil
+	theShadersWithInternalShader.remove(s)
 }
 
 var (
-	NearestFilterShader = &Shader{shader: restorable.NearestFilterShader}
-	LinearFilterShader  = &Shader{shader: restorable.LinearFilterShader}
+	NearestFilterShader *Shader
+	LinearFilterShader  *Shader
+	clearShader         *Shader
 )
+
+func init() {
+	var wg errgroup.Group
+	var nearestIR, linearIR, clearIR *shaderir.Program
+	wg.Go(func() error {
+		ir, err := graphics.CompileShader([]byte(builtinshader.ShaderSource(builtinshader.FilterNearest, builtinshader.AddressUnsafe)))
+		if err != nil {
+			return fmt.Errorf("atlas: compiling the nearest shader failed: %w", err)
+		}
+		nearestIR = ir
+		return nil
+	})
+	wg.Go(func() error {
+		ir, err := graphics.CompileShader([]byte(builtinshader.ShaderSource(builtinshader.FilterLinear, builtinshader.AddressUnsafe)))
+		if err != nil {
+			return fmt.Errorf("atlas: compiling the linear shader failed: %w", err)
+		}
+		linearIR = ir
+		return nil
+	})
+	wg.Go(func() error {
+		ir, err := graphics.CompileShader([]byte(builtinshader.ClearShaderSource))
+		if err != nil {
+			return fmt.Errorf("atlas: compiling the clear shader failed: %w", err)
+		}
+		clearIR = ir
+		return nil
+	})
+	if err := wg.Wait(); err != nil {
+		panic(err)
+	}
+	NearestFilterShader = NewShader(nearestIR, "nearest")
+	LinearFilterShader = NewShader(linearIR, "linear")
+	clearShader = NewShader(clearIR, "clear")
+}

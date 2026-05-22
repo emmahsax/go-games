@@ -18,6 +18,7 @@ package ui
 
 import (
 	"image"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -81,6 +82,15 @@ func (m *monitors) append(ms []*Monitor) []*Monitor {
 	return append(ms, m.monitors...)
 }
 
+func (m *monitors) contains(monitor *Monitor) bool {
+	if !m.updateCalled.Load() {
+		return false
+	}
+	m.m.Lock()
+	defer m.m.Unlock()
+	return slices.Contains(m.monitors, monitor)
+}
+
 func (m *monitors) primaryMonitor() *Monitor {
 	if !m.updateCalled.Load() {
 		panic("ui: (*monitors).update must be called before (*monitors).primaryMonitor is called")
@@ -89,7 +99,7 @@ func (m *monitors) primaryMonitor() *Monitor {
 	m.m.Lock()
 	defer m.m.Unlock()
 
-	// GetMonitors might return nil in theory (#1878, #1887).
+	// GetMonitors might return nil in theory (#1878, #1887, #3241).
 	// primaryMonitor can be called at the initialization, so monitors can be nil.
 	if len(m.monitors) == 0 {
 		return nil
@@ -132,7 +142,7 @@ func (m *monitors) update() error {
 
 		// Keep calling GetContentScale until the returned scale is 0 (#2051).
 		// Retry this at most 5 times to avoid an infinite loop.
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// An error can happen e.g. when entering a screensaver on Windows (#2488).
 			sx, _, err := m.GetContentScale()
 			if err != nil {

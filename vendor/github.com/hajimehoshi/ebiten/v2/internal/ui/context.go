@@ -15,6 +15,7 @@
 package ui
 
 import (
+	"errors"
 	"math"
 	"time"
 
@@ -106,15 +107,21 @@ func (c *context) updateFrameImpl(graphicsDriver graphicsdriver.Graphics, update
 		return false, nil
 	}
 
+	// On Android, GPU resources might be saved until the app is resumed.
+	// Skip updating and drawing until then.
+	if atlas.IsSuspended() {
+		return true, nil
+	}
+
 	debug.FrameLogf("----\n")
 
 	if err := atlas.BeginFrame(graphicsDriver); err != nil {
 		return false, err
 	}
 	defer func() {
-		if err1 := atlas.EndFrame(); err1 != nil && err == nil {
+		if atlasErr := atlas.EndFrame(graphicsDriver); atlasErr != nil {
 			needsSwapBuffers = false
-			err = err1
+			err = errors.Join(err, atlasErr)
 			return
 		}
 	}()
@@ -130,7 +137,7 @@ func (c *context) updateFrameImpl(graphicsDriver graphicsdriver.Graphics, update
 	}
 
 	// Update the input state after the layout is updated as a cursor position is affected by the layout.
-	if err := ui.updateInputState(); err != nil {
+	if err := ui.updateInputStateForFrame(deviceScaleFactor); err != nil {
 		return false, err
 	}
 
@@ -160,7 +167,7 @@ func (c *context) updateFrameImpl(graphicsDriver graphicsdriver.Graphics, update
 			return false, err
 		}
 
-		ui.tick.Add(1)
+		ui.incrementTick()
 	}
 
 	// Update window icons during a frame, since an icon might be *ebiten.Image and
@@ -212,12 +219,6 @@ func (c *context) newOffscreenImage(w, h int) *Image {
 }
 
 func (c *context) drawGame(graphicsDriver graphicsdriver.Graphics, ui *UserInterface, forceDraw bool) (needSwapBuffers bool, err error) {
-	if (c.offscreen.imageType == atlas.ImageTypeVolatile) != ui.IsScreenClearedEveryFrame() {
-		w, h := c.offscreen.width, c.offscreen.height
-		c.offscreen.Deallocate()
-		c.offscreen = c.newOffscreenImage(w, h)
-	}
-
 	// isOffscreenModified is updated when an offscreen's modifyCallback.
 	c.isOffscreenModified = false
 
@@ -246,6 +247,11 @@ func (c *context) drawGame(graphicsDriver graphicsdriver.Graphics, ui *UserInter
 		return false, nil
 	}
 
+	// screen can be nil for some edge cases (#3121).
+	if c.screen == nil {
+		return false, nil
+	}
+
 	if graphicsDriver.NeedsClearingScreen() {
 		// This clear is needed for fullscreen mode or some mobile platforms (#622).
 		c.screen.clear()
@@ -253,9 +259,6 @@ func (c *context) drawGame(graphicsDriver graphicsdriver.Graphics, ui *UserInter
 
 	c.game.DrawFinalScreen(c.screenScaleAndOffsets())
 
-	// The final screen is never used as the rendering source.
-	// Flush its buffer here just in case.
-	c.screen.flushBufferIfNeeded()
 	return true, nil
 }
 
@@ -284,7 +287,7 @@ func (c *context) layoutGame(outsideWidth, outsideHeight float64, deviceScaleFac
 		c.screen.Deallocate()
 		c.screen = nil
 	}
-	if c.screen == nil {
+	if c.screen == nil && sw > 0 && sh > 0 {
 		c.screen = c.game.NewScreenImage(sw, sh)
 	}
 
@@ -317,7 +320,7 @@ func (c *context) logicalPositionToClientPosition(x, y float64, deviceScaleFacto
 func (c *context) screenScaleAndOffsets() (scale, offsetX, offsetY float64) {
 	scaleX := c.screenWidth / c.offscreenWidth
 	scaleY := c.screenHeight / c.offscreenHeight
-	scale = math.Min(scaleX, scaleY)
+	scale = min(scaleX, scaleY)
 	width := c.offscreenWidth * scale
 	height := c.offscreenHeight * scale
 	offsetX = (c.screenWidth - width) / 2

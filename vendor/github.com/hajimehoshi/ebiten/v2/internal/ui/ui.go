@@ -17,13 +17,12 @@ package ui
 import (
 	"errors"
 	"image"
-	"sync"
 	"sync/atomic"
 
 	_ "github.com/ebitengine/hideconsole"
 
 	"github.com/hajimehoshi/ebiten/v2/internal/atlas"
-	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver"
+	"github.com/hajimehoshi/ebiten/v2/internal/color"
 	"github.com/hajimehoshi/ebiten/v2/internal/mipmap"
 	"github.com/hajimehoshi/ebiten/v2/internal/thread"
 )
@@ -73,14 +72,14 @@ const (
 )
 
 type UserInterface struct {
-	err  error
-	errM sync.Mutex
+	err atomic.Pointer[error]
 
 	isScreenClearedEveryFrame atomic.Bool
 	graphicsLibrary           atomic.Int32
 	running                   atomic.Bool
 	terminated                atomic.Bool
-	tick                      atomic.Uint64
+	tick                      atomic.Int64
+	inputTime                 atomic.Int64
 
 	whiteImage *Image
 
@@ -145,11 +144,11 @@ func (u *UserInterface) readPixels(mipmap *mipmap.Mipmap, pixels []byte, region 
 		// This never happens so far, but if handling inputs after EndFrame is implemented,
 		// this might be possible (#1704).
 
-		var err1 error
+		var err error
 		u.context.runInFrame(func() {
-			ok, err := mipmap.ReadPixels(u.graphicsDriver, pixels, region)
-			if err != nil {
-				err1 = err
+			ok, mipmapErr := mipmap.ReadPixels(u.graphicsDriver, pixels, region)
+			if mipmapErr != nil {
+				err = mipmapErr
 				return
 			}
 			if !ok {
@@ -157,7 +156,7 @@ func (u *UserInterface) readPixels(mipmap *mipmap.Mipmap, pixels []byte, region 
 				panic("ui: ReadPixels unexpectedly failed")
 			}
 		})
-		return err1
+		return err
 	}
 
 	return nil
@@ -178,10 +177,13 @@ type RunOptions struct {
 	SkipTaskbar              bool
 	SingleThread             bool
 	DisableHiDPI             bool
-	ColorSpace               graphicsdriver.ColorSpace
+	ColorSpace               color.ColorSpace
+	ApplePressAndHoldEnabled bool
 	X11ClassName             string
 	X11InstanceName          string
-	StrictContextRestoration bool
+	InitWindowWidthInDIP     int
+	InitWindowHeightInDIP    int
+	WindowPositionSet        bool
 }
 
 // InitialWindowPosition returns the position for centering the given second width/height pair within the first width/height pair.
@@ -190,16 +192,27 @@ func InitialWindowPosition(mw, mh, ww, wh int) (x, y int) {
 }
 
 func (u *UserInterface) error() error {
-	u.errM.Lock()
-	defer u.errM.Unlock()
-	return u.err
+	if err := u.err.Load(); err != nil {
+		return *err
+	}
+	return nil
 }
 
 func (u *UserInterface) setError(err error) {
-	u.errM.Lock()
-	defer u.errM.Unlock()
-	if u.err == nil {
-		u.err = err
+	if err == nil {
+		return
+	}
+	for {
+		oldErr := u.err.Load()
+		var newErr error
+		if oldErr != nil {
+			newErr = errors.Join(*oldErr, err)
+		} else {
+			newErr = err
+		}
+		if u.err.CompareAndSwap(oldErr, &newErr) {
+			break
+		}
 	}
 }
 
@@ -235,6 +248,39 @@ func (u *UserInterface) setTerminated() {
 	u.terminated.Store(true)
 }
 
-func (u *UserInterface) Tick() uint64 {
+func (u *UserInterface) Tick() int64 {
 	return u.tick.Load()
+}
+
+func (u *UserInterface) incrementTick() {
+	u.tick.Add(1)
+	u.inputTime.Store(int64(NewInputTimeFromTick(u.tick.Load())))
+}
+
+func (u *UserInterface) InputTime() InputTime {
+	t := InputTime(u.inputTime.Add(1))
+	if t.Subtick() == 0 {
+		panic("ui: too many input events in a tick")
+	}
+	return t
+}
+
+// inputTimeSubtickBits is the number of bits for a counter in a tick.
+// An input time consists of a tick and a counter in a tick.
+// This means that an input time will be invalid when 2^20 = 1048576 inputs are handled in a tick,
+// but this should unlikely happen.
+const inputTimeSubtickBits = 20
+
+type InputTime int64
+
+func NewInputTimeFromTick(tick int64) InputTime {
+	return InputTime(tick << inputTimeSubtickBits)
+}
+
+func (i InputTime) Tick() int64 {
+	return int64(i >> inputTimeSubtickBits)
+}
+
+func (i InputTime) Subtick() int64 {
+	return int64(i & ((1 << inputTimeSubtickBits) - 1))
 }

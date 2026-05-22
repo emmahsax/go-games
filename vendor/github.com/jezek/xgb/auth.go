@@ -8,7 +8,9 @@ It is largely unmodified from the original XGB package that I forked.
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 )
@@ -85,6 +87,26 @@ func readAuthority(hostname, display string) (
 		}
 	}
 	panic("unreachable")
+}
+
+// readAuthorityFromCookieHex decodes a hexadecimal MIT-MAGIC-COOKIE-1 string.
+// It expects a 32-character hex string (16 bytes) and returns the decoded cookie data.
+// Returns an error if the hex string is empty, invalid, or not exactly 16 bytes.
+func readAuthorityFromCookieHex(cookieHex string) (name string, data []byte, err error) {
+	if cookieHex == "" {
+		return "", nil, errors.New("cookie hex string is required")
+	}
+
+	authData, err := hex.DecodeString(cookieHex)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid cookie hex: %v", err)
+	}
+
+	if len(authData) != 16 {
+		return "", nil, errors.New("cookie must be 16 bytes (32 hex chars)")
+	}
+
+	return "MIT-MAGIC-COOKIE-1", authData, nil
 }
 
 func getBytes(r io.Reader, b []byte) ([]byte, error) {

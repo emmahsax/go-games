@@ -25,6 +25,8 @@ import (
 	"github.com/jezek/xgb/randr"
 	"github.com/jezek/xgb/xproto"
 
+	"github.com/hajimehoshi/ebiten/v2/internal/color"
+	"github.com/hajimehoshi/ebiten/v2/internal/colormode"
 	"github.com/hajimehoshi/ebiten/v2/internal/glfw"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver"
 	"github.com/hajimehoshi/ebiten/v2/internal/graphicsdriver/opengl"
@@ -34,9 +36,13 @@ func (u *UserInterface) initializePlatform() error {
 	return nil
 }
 
+func (u *UserInterface) setApplePressAndHoldEnabled(enabled bool) {
+	// Do nothings.
+}
+
 type graphicsDriverCreatorImpl struct {
 	transparent bool
-	colorSpace  graphicsdriver.ColorSpace
+	colorSpace  color.ColorSpace
 }
 
 func (g *graphicsDriverCreatorImpl) newAuto() (graphicsdriver.Graphics, GraphicsLibrary, error) {
@@ -131,8 +137,8 @@ func dipToGLFWPixel(x float64, deviceScaleFactor float64) float64 {
 	return x * deviceScaleFactor
 }
 
-func (u *UserInterface) adjustWindowPosition(x, y int, monitor *Monitor) (int, int) {
-	return x, y
+func (u *UserInterface) adjustWindowPosition(x, y int, monitor *Monitor) (int, int, error) {
+	return x, y, nil
 }
 
 func initialMonitorByOS() (*Monitor, error) {
@@ -207,5 +213,52 @@ func (u *UserInterface) setDocumentEdited(edited bool) error {
 }
 
 func (u *UserInterface) afterWindowCreation() error {
+	return nil
+}
+
+// setWindowColorModeImpl must be called from the main thread.
+func (u *UserInterface) setWindowColorModeImpl(mode colormode.ColorMode) error {
+	xconn, err := xgb.NewConn()
+	if err != nil {
+		// Assume we're on pure Wayland then.
+		return nil
+	}
+	defer xconn.Close()
+
+	// Get the X11 window ID from GLFW
+	window, err := u.window.GetX11Window()
+	if err != nil {
+		return err
+	}
+
+	var themeVariant string
+	switch mode {
+	case colormode.Light:
+		themeVariant = "light"
+	case colormode.Dark:
+		themeVariant = "dark"
+	case colormode.Unknown:
+		// Keep themeVariant empty.
+	}
+
+	gtkThemeVariantStr := "_GTK_THEME_VARIANT"
+	r, err := xproto.InternAtom(xconn, false, uint16(len(gtkThemeVariantStr)), gtkThemeVariantStr).Reply()
+	if err != nil {
+		return err
+	}
+	gtkThemeVariantAtom := r.Atom
+
+	utf8Str := "UTF8_STRING"
+	r, err = xproto.InternAtom(xconn, false, uint16(len(utf8Str)), utf8Str).Reply()
+	if err != nil {
+		return err
+	}
+	utf8StringAtom := r.Atom
+
+	if themeVariant == "" {
+		_ = xproto.DeleteProperty(xconn, xproto.Window(window), gtkThemeVariantAtom)
+		return nil
+	}
+	_ = xproto.ChangeProperty(xconn, xproto.PropModeReplace, xproto.Window(window), gtkThemeVariantAtom, utf8StringAtom, 8, uint32(len(themeVariant)), []byte(themeVariant))
 	return nil
 }

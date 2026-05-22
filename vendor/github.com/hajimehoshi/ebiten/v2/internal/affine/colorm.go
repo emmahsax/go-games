@@ -667,7 +667,7 @@ func (c *colorMImplBodyTranslate) Scale(r, g, b, a float32) ColorM {
 	}
 
 	eb := c.body
-	for i := 0; i < ColorMDim-1; i++ {
+	for i := range ColorMDim - 1 {
 		eb[i*(ColorMDim-1)] *= r
 		eb[i*(ColorMDim-1)+1] *= g
 		eb[i*(ColorMDim-1)+2] *= b
@@ -782,13 +782,4 @@ func ChangeHSV(c ColorM, hueTheta float64, saturationScale float32, valueScale f
 	c = c.Scale(v, s*v, s*v, 1)
 	c = c.Concat(yCbCrToRgb)
 	return c
-}
-
-type cachedScalingColorMKey struct {
-	r, g, b, a float32
-}
-
-type cachedScalingColorMValue struct {
-	c     *colorMImplScale
-	atime uint64
 }

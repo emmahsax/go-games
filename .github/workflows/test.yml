@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check Out Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Build Dependencies
         run: |
@@ -19,9 +19,9 @@ jobs:
           sudo apt-get install -y gcc clang libc6-dev libgl1-mesa-dev xorg-dev
 
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: 1.24
+          go-version: 1.26
 
       - name: Go Build
         run: go build -o bin/go-games .
@@ -33,14 +33,14 @@ jobs:
         run: go vet -v ./...
 
       - name: Go FMT
-        uses: Jerome1337/gofmt-action@v1.0.5
+        uses: emmahsax/github-actions/gofmt-check@main
         with:
-          gofmt-path: ./
-          gofmt-flags: '-l -d'
+          gofmt_flags: '-l -d'
+          gofmt_path: ./
 
       - name: Go Staticcheck
-        uses: dominikh/staticcheck-action@v1.4.0
+        uses: dominikh/staticcheck-action@v1.4.1
         with:
           install-go: false
-          cache-key: 1.24
+          cache-key: 1.26
           working-directory: ./

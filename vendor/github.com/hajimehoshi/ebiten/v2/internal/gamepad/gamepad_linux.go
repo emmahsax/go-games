@@ -182,9 +182,9 @@ func (*nativeGamepadsImpl) openGamepad(gamepads *gamepads, path string) (err err
 	}
 	gp := gamepads.add(name, sdlID)
 	gp.native = n
-	runtime.SetFinalizer(gp, func(gp *Gamepad) {
+	runtime.AddCleanup(gp, func(n *nativeGamepadImpl) {
 		n.close()
-	})
+	}, n)
 
 	var axisCount int
 	var buttonCount int
@@ -377,7 +377,7 @@ func (g *nativeGamepadImpl) update(gamepad *gamepads) error {
 }
 
 func (g *nativeGamepadImpl) pollAbsState() error {
-	for code := 0; code < _ABS_CNT; code++ {
+	for code := range _ABS_CNT {
 		if g.absMap[code] < 0 {
 			continue
 		}
