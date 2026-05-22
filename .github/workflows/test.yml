@@ -21,7 +21,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v6
         with:
-          go-version: 1.24
+          go-version: 1.26
 
       - name: Go Build
         run: go build -o bin/go-games .
@@ -42,5 +42,5 @@ jobs:
         uses: dominikh/staticcheck-action@v1.4.1
         with:
           install-go: false
-          cache-key: 1.24
+          cache-key: 1.26
           working-directory: ./
